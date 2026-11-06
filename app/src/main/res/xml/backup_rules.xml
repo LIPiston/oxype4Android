@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 11 and below. The Oxype session preferences (`oxype_client_session`) hold the
+    bearer token, so they are excluded from both cloud backup and device transfer.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="oxype_client_session.xml" />
+</full-backup-content>

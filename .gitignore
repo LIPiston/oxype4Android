@@ -1,0 +1,35 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Kotlin
+.kotlin/
+
+# Android / local configuration
+local.properties
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+.vscode/
+*.hprof
+
+# Agent / tooling scratch space
+.zcode/
+
+# Logs
+*.log
+
+# Build artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# OS noise
+.DS_Store
+Thumbs.db
