@@ -27,12 +27,28 @@ data class ChatUiState(
     val reachedTop: Boolean = true,
     val draft: String = "",
     val error: String? = null,
-    val currentUserId: Long = 0L
+    val currentUserId: Long = 0L,
+    /** The message this composer is answering, or `null` for a plain message. */
+    val replyTarget: ReplyTarget? = null
 ) {
     /** True when another account participates, so sender labels and avatars apply. */
     val isGroup: Boolean
         get() = isGroupConversation(participants, messages, currentUserId)
 }
+
+/**
+ * The message the composer is answering.
+ *
+ * Only [messageId] is sent: the server resolves and freezes the quoted author and text
+ * itself. [authorName] and [body] exist so the strip above the input can show what is
+ * being answered without another lookup — and [body] is clamped because a long quote
+ * must not push the input off screen.
+ */
+data class ReplyTarget(
+    val messageId: Long,
+    val authorName: String,
+    val body: String
+)
 
 /**
  * Chat state for one conversation.
@@ -177,7 +193,8 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
             reachedTop = false,
             draft = "",
             error = null,
-            currentUserId = repository.currentUserId() ?: 0L
+            currentUserId = repository.currentUserId() ?: 0L,
+            replyTarget = null
         )
         watchRepository()
         opening?.cancel()
@@ -276,15 +293,40 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
         _state.value = _state.value.copy(draft = value)
     }
 
+    /**
+     * Starts a reply to [message].
+     *
+     * Three entries on the screen (the long-press menu, a left swipe, a double tap on the
+     * right side) all funnel here, so the target is built one way. Calling it again
+     * simply replaces the target: there is no stack of quotes.
+     */
+    fun beginReply(message: ChatMessage) {
+        if (message.id <= 0L) return
+        _state.value = _state.value.copy(
+            replyTarget = ReplyTarget(
+                messageId = message.id,
+                authorName = senderDisplayName(message.senderId, _state.value.participants),
+                body = message.plainText.trim().take(REPLY_PREVIEW_CHARS)
+            )
+        )
+    }
+
+    /** Drops the quote without touching the draft or the scroll position. */
+    fun cancelReply() {
+        if (_state.value.replyTarget == null) return
+        _state.value = _state.value.copy(replyTarget = null)
+    }
+
     fun send() {
         val text = _state.value.draft
         if (text.isBlank() || _state.value.isSending) return
         val generation = bindingGeneration
         val sessionId = _state.value.sessionId
+        val replyTo = _state.value.replyTarget?.messageId
         _state.value = _state.value.copy(draft = "", isSending = true)
         viewModelScope.launch {
             val sent = try {
-                repository.sendText(text)
+                repository.sendText(text, replyTo)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -296,13 +338,16 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
             if (!sent) {
                 // Every early exit — blank text, signed out, no open chat, a refusal or a
                 // transport failure — must restore the draft and drop the busy flag, or
-                // the composer stays disabled forever.
+                // the composer stays disabled forever. The quote stays too: the user can
+                // retry the very same reply or cancel it.
                 _state.value = _state.value.copy(
                     isSending = false,
                     draft = _state.value.draft.ifEmpty { text }
                 )
             } else {
-                _state.value = _state.value.copy(isSending = false)
+                // Only a confirmed send consumes the quote. Clearing it in the failure
+                // branch would silently turn a retry into an unquoted message.
+                _state.value = _state.value.copy(isSending = false, replyTarget = null)
             }
         }
     }
@@ -436,12 +481,24 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
             isSending = false,
             reachedTop = true,
             draft = "",
-            error = null
+            error = null,
+            replyTarget = null
         )
     }
 
     override fun onCleared() {
         super.onCleared()
         repository.closeChat()
+    }
+
+    private companion object {
+        /**
+         * Characters of the quoted text shown in the composer strip.
+         *
+         * The strip is one line tall, so this is a preview, not the quote: the bubble
+         * carries the whole thing. Clamping here keeps a long quote from doing work in
+         * composition on every recomposition of the input row.
+         */
+        const val REPLY_PREVIEW_CHARS = 200
     }
 }

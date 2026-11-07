@@ -914,4 +914,229 @@ class ChatViewModelTest {
         )
         assertNull(repository.chat.value!!.error)
     }
+
+    /** Session 9 has a 250-character message and a short one, both from bob. */
+    private val longBody = "长".repeat(250)
+
+    private fun replyTransport(sendFails: Boolean = false) =
+        ScriptedTransport { _, route ->
+            when (route) {
+                "/receivedMessageSeq/1/9" -> HttpResponse(200, """{"data":{"seq":0}}""")
+                "/lastMessage/9" ->
+                    HttpResponse(200, """{"data":{"hasMessage":true,"id":2}}""")
+
+                "/getMessages/9" -> HttpResponse(
+                    200,
+                    """{"data":[
+                        {"id":1,"sender":2,"pieces":[{"type":"text","text":"$longBody"}]},
+                        {"id":2,"sender":2,"pieces":[{"type":"text","text":"短消息"}]}
+                    ]}"""
+                )
+
+                "/getSessionUsers/9" -> HttpResponse(
+                    200,
+                    """{"data":{"users":[{"userid":2,"username":"bob"}]}}"""
+                )
+
+                "/sendMessage/9" -> {
+                    if (sendFails) {
+                        HttpResponse(500, """{"error_message":"boom"}""")
+                    } else {
+                        HttpResponse(200, """{"data":{"seq":3}}""")
+                    }
+                }
+
+                else -> null
+            }
+        }
+
+    @Test
+    fun `starting a reply targets the message with its author and a clamped body`() = runTest {
+        val repository = repositoryWith(signedInStorage(), replyTransport(), backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+
+        viewModel.beginReply(viewModel.state.value.messages.first { it.id == 1L })
+
+        val target = viewModel.state.value.replyTarget
+        assertNotNull(target)
+        assertEquals(1L, target!!.messageId)
+        assertEquals("bob", target.authorName)
+        assertEquals("a 250-character quote must not survive into the strip",
+            200, target.body.length)
+        assertEquals(longBody.take(200), target.body)
+
+        // A second call replaces the first rather than stacking targets.
+        viewModel.beginReply(viewModel.state.value.messages.first { it.id == 2L })
+        assertEquals(2L, viewModel.state.value.replyTarget!!.messageId)
+        assertEquals("短消息", viewModel.state.value.replyTarget!!.body)
+    }
+
+    @Test
+    fun `cancelling a reply clears the target`() = runTest {
+        val repository = repositoryWith(signedInStorage(), replyTransport(), backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+
+        viewModel.cancelReply()
+
+        assertNull(viewModel.state.value.replyTarget)
+    }
+
+    @Test
+    fun `a successful send clears the reply target`() = runTest {
+        val transport = replyTransport()
+        val repository = repositoryWith(signedInStorage(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+        viewModel.setDraft("收到")
+
+        viewModel.send()
+        testScheduler.runCurrent()
+
+        assertNull(viewModel.state.value.replyTarget)
+        val sent = org.json.JSONObject(
+            transport.requests.last { it.url.contains("/sendMessage/9") }.body!!
+        ).getJSONArray("pieces")
+        assertEquals("reply", sent.getJSONObject(0).getString("type"))
+        assertEquals(1L, sent.getJSONObject(0).getLong("messageId"))
+    }
+
+    @Test
+    fun `a failed send keeps the reply target for a retry`() = runTest {
+        val repository = repositoryWith(signedInStorage(), replyTransport(sendFails = true), backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+        viewModel.setDraft("收到")
+
+        viewModel.send()
+        testScheduler.runCurrent()
+
+        assertEquals(1L, viewModel.state.value.replyTarget?.messageId)
+        assertEquals("收到", viewModel.state.value.draft)
+        assertNotNull(viewModel.state.value.error)
+    }
+
+    @Test
+    fun `switching conversations clears the reply target`() = runTest {
+        val transport = ScriptedTransport { _, route ->
+            when (route) {
+                "/lastMessage/9" ->
+                    HttpResponse(200, """{"data":{"hasMessage":true,"id":1}}""")
+
+                "/getMessages/9" -> HttpResponse(
+                    200,
+                    """{"data":[{"id":1,"sender":2,"pieces":[{"type":"text","text":"a"}]}]}"""
+                )
+
+                "/lastMessage/10" -> HttpResponse(200, """{"data":{"hasMessage":false}}""")
+                "/getMessages/10" -> HttpResponse(200, """{"data":[]}""")
+                else -> null
+            }
+        }
+        val repository = repositoryWith(signedInStorage(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "A", "")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+        assertNotNull(viewModel.state.value.replyTarget)
+
+        viewModel.open(10, "B", "")
+        testScheduler.runCurrent()
+
+        assertNull("a reply pointed at A's message must not follow the user into B",
+            viewModel.state.value.replyTarget)
+    }
+
+    @Test
+    fun `closing and signing out clear the reply target`() = runTest {
+        val repository = repositoryWith(signedInStorage(), replyTransport(), backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+
+        viewModel.close()
+
+        assertNull(viewModel.state.value.replyTarget)
+
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+        assertNotNull(viewModel.state.value.replyTarget)
+
+        repository.logout()
+        testScheduler.runCurrent()
+
+        assertNull(viewModel.state.value.replyTarget)
+    }
+
+    @Test
+    fun `a send that finishes after a switch does not clear the new reply target`() = runTest {
+        val sendStarted = CompletableDeferred<Unit>()
+        val sendGate = CompletableDeferred<Unit>()
+        val transport = ScriptedTransport { _, route ->
+            when (route) {
+                "/receivedMessageSeq/1/9" -> HttpResponse(200, """{"data":{"seq":0}}""")
+                "/lastMessage/9" ->
+                    HttpResponse(200, """{"data":{"hasMessage":true,"id":1}}""")
+
+                "/getMessages/9" -> HttpResponse(
+                    200,
+                    """{"data":[{"id":1,"sender":2,"pieces":[{"type":"text","text":"a"}]}]}"""
+                )
+
+                "/sendMessage/9" -> {
+                    sendStarted.complete(Unit)
+                    sendGate.await()
+                    HttpResponse(200, """{"data":{"seq":2}}""")
+                }
+
+                "/receivedMessageSeq/1/10" -> HttpResponse(200, """{"data":{"seq":0}}""")
+                "/lastMessage/10" ->
+                    HttpResponse(200, """{"data":{"hasMessage":true,"id":500}}""")
+
+                "/getMessages/10" -> HttpResponse(
+                    200,
+                    """{"data":[{"id":500,"sender":2,"pieces":[{"type":"text","text":"b"}]}]}"""
+                )
+
+                else -> null
+            }
+        }
+        val repository = repositoryWith(signedInStorage(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "A", "")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first())
+        viewModel.setDraft("hi")
+
+        viewModel.send()
+        sendStarted.await()
+
+        viewModel.open(10, "B", "")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first { it.id == 500L })
+        assertNotNull(viewModel.state.value.replyTarget)
+
+        sendGate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals("A's successful send must not cancel B's reply",
+            500L, viewModel.state.value.replyTarget?.messageId)
+    }
 }
