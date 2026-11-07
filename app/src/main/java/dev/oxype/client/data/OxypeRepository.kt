@@ -62,7 +62,7 @@ enum class AuthRestoreState {
 }
 
 /**
- * The login that owned a piece of asynchronous work when it started.
+ * The stored login that owned a piece of asynchronous work when it started.
  *
  * Every authenticated call captures one of these before its first suspension and hands
  * it back before invalidating credentials or writing state. The `generation` matters as
@@ -73,6 +73,28 @@ enum class AuthRestoreState {
 class AuthOwner internal constructor(
     internal val generation: Long,
     val credentials: AuthCredentials
+)
+
+/**
+ * The signed-in account's profile, already resolved for display.
+ *
+ * [avatarUrl] is an absolute HTTP(S) URL on the server that answered (or `null` when the
+ * account has no picture), so the screen can load it without knowing the base URL.
+ *
+ * [identity] is what the snapshot belongs to: the login generation, the user id and the
+ * server address. Signing in again, switching accounts or pointing the app at another
+ * server all make a cached snapshot unreadable, because the same id is a different person
+ * there.
+ */
+data class ProfileSnapshot(
+    val userId: Long,
+    val username: String,
+    val avatarUrl: String?,
+    val hasAvatar: Boolean,
+    val maxBytes: Long,
+    val maxEdge: Int,
+    val formats: List<String>,
+    internal val identity: String
 )
 
 
@@ -106,6 +128,18 @@ class OxypeRepository(
 
     private val _chat = MutableStateFlow<ChatSnapshot?>(null)
     val chat: StateFlow<ChatSnapshot?> = _chat.asStateFlow()
+
+    private val _profile = MutableStateFlow<ProfileSnapshot?>(null)
+
+    /**
+     * The signed-in account's profile, or `null` before it has been read.
+     *
+     * Null means "not read (yet)" as well as "signed out"; the screen decides which by
+     * looking at [credentials]. A snapshot from a previous login or server is dropped
+     * here rather than left for the screen to filter, so no reader can accidentally show
+     * it.
+     */
+    val profile: StateFlow<ProfileSnapshot?> = _profile.asStateFlow()
 
     /** Set when the stored token turned out to be dead, so the UI can explain why. */
     private val _sessionExpired = MutableStateFlow(false)
@@ -283,6 +317,8 @@ class OxypeRepository(
         // A fresh login invalidates everything a previous login started, even when it is
         // the same account: the token differs, so an old 401 is not about this session.
         authGeneration++
+        // The cached profile belongs to the token that is going away.
+        clearProfile()
         _credentials.value = credentials
         // Same guard as [restoreSession]: an observer may sign out during the publish.
         _authState.value = if (_credentials.value == credentials) {
@@ -318,6 +354,7 @@ class OxypeRepository(
         _credentials.value = null
         _sessions.value = emptyList()
         clearChat()
+        clearProfile()
         _sessionExpired.value = expired
         _authState.value = AuthRestoreState.SIGNED_OUT
     }
@@ -485,6 +522,93 @@ class OxypeRepository(
             isAdmin = isAdmin
         )
     }
+
+    /**
+     * Reads the signed-in account's own profile.
+     *
+     * A 401 invalidates the login (the token is gone) while a 403 is reported as-is and
+     * leaves the login alone, exactly like every other authenticated call. The answer is
+     * published only when the login and the server it was asked against are still the
+     * ones in effect, so a slow read for account A cannot paint over B.
+     */
+    suspend fun loadProfile(): ProfileSnapshot {
+        val owner = authOwner() ?: throw unauthorized()
+        val identity = profileIdentity(owner)
+        val profile = try {
+            api.profile(owner.credentials)
+        } catch (e: OxypeException) {
+            if (e.kind == OxypeErrorKind.UNAUTHORIZED) invalidateCredentials(owner)
+            throw e
+        }
+        if (!isCurrentAuth(owner) || profileIdentity(owner) != identity) throw unauthorized()
+        val snapshot = profile.toSnapshot(identity)
+        _profile.value = snapshot
+        return snapshot
+    }
+
+    /**
+     * Uploads an avatar for the signed-in account.
+     *
+     * [imageBase64] as received: the API strips an optional `data:` prefix. The local
+     * format/size gate belongs to the screen, because it needs the decoded bytes anyway.
+     */
+    suspend fun uploadAvatar(imageBase64: String): ProfileSnapshot {
+        val owner = authOwner() ?: throw unauthorized()
+        val identity = profileIdentity(owner)
+        val profile = try {
+            api.uploadAvatar(owner.credentials, imageBase64)
+        } catch (e: OxypeException) {
+            if (e.kind == OxypeErrorKind.UNAUTHORIZED) invalidateCredentials(owner)
+            throw e
+        }
+        if (!isCurrentAuth(owner) || profileIdentity(owner) != identity) throw unauthorized()
+        val snapshot = profile.toSnapshot(identity)
+        _profile.value = snapshot
+        return snapshot
+    }
+
+    /** Removes the signed-in account's avatar; the account draws as an initial again. */
+    suspend fun removeAvatar(): ProfileSnapshot {
+        val owner = authOwner() ?: throw unauthorized()
+        val identity = profileIdentity(owner)
+        val profile = try {
+            api.removeAvatar(owner.credentials)
+        } catch (e: OxypeException) {
+            if (e.kind == OxypeErrorKind.UNAUTHORIZED) invalidateCredentials(owner)
+            throw e
+        }
+        if (!isCurrentAuth(owner) || profileIdentity(owner) != identity) throw unauthorized()
+        val snapshot = profile.toSnapshot(identity)
+        _profile.value = snapshot
+        return snapshot
+    }
+
+    /** Drops the cached profile; called on sign-out and available to a deliberate refresh. */
+    fun clearProfile() {
+        _profile.value = null
+    }
+
+    /**
+     * What a profile snapshot belongs to: the login generation, the account, the server.
+     *
+     * A user id alone is not an identity — the same id on another server is a different
+     * person, and signing the same account in again issues a new token whose answers must
+     * not be confused with the previous one's.
+     */
+    private fun profileIdentity(owner: AuthOwner): String =
+        "${owner.generation}|${owner.credentials.userId}|${http.baseUrl}"
+
+    private fun dev.oxype.client.data.oxype.UserProfile.toSnapshot(identity: String) =
+        ProfileSnapshot(
+            userId = userId,
+            username = username,
+            avatarUrl = avatarUrl,
+            hasAvatar = hasAvatar,
+            maxBytes = maxBytes,
+            maxEdge = maxEdge,
+            formats = formats,
+            identity = identity
+        )
 
     /**
      * Opens a conversation: resets local state, anchors on the newest message when the
