@@ -212,4 +212,112 @@ class GroupInfoViewModelTest {
         assertFalse(viewModel.state.value.isLoading)
         assertEquals("周末徒步小队", viewModel.state.value.info?.name)
     }
+
+    @Test
+    fun `a cached page is not reused after signing out and back in`() = runTest {
+        var calls = 0
+        val repository = repositoryWith(
+            signedIn(),
+            ScriptedTransport { _, route ->
+                when {
+                    route.startsWith("/getSessionInfo/") -> {
+                        calls++
+                        HttpResponse(200, detail())
+                    }
+
+                    route.startsWith("/getSession/") -> HttpResponse(404, """{"error_message":"no"}""")
+                    route.startsWith("/getSessionUsers/") ->
+                        HttpResponse(200, """{"users":[{"userid":2,"username":"林间小道"}]}""")
+
+                    else -> null
+                }
+            },
+            backgroundScope
+        )
+        repository.login(1L, "secret1")
+        val viewModel = GroupInfoViewModel(repository)
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+        assertEquals(1, calls)
+
+        // The same account signs in again with a new token: `（我）`, the role badges and
+        // the membership list all belong to that *login*, not to the user id alone.
+        repository.logout()
+        repository.login(1L, "secret1")
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+
+        assertEquals("a new login must not inherit the previous page", 2, calls)
+        assertFalse(viewModel.state.value.isLoading)
+        assertEquals("周末徒步小队", viewModel.state.value.info?.name)
+    }
+
+    @Test
+    fun `a cached page is not reused after the server address changes`() = runTest {
+        var calls = 0
+        val repository = repositoryWith(
+            signedIn(),
+            ScriptedTransport { _, route ->
+                when {
+                    route.startsWith("/getSessionInfo/") -> {
+                        calls++
+                        HttpResponse(200, detail())
+                    }
+
+                    route.startsWith("/getSession/") -> HttpResponse(404, """{"error_message":"no"}""")
+                    route.startsWith("/getSessionUsers/") ->
+                        HttpResponse(200, """{"users":[{"userid":2,"username":"林间小道"}]}""")
+
+                    else -> null
+                }
+            },
+            backgroundScope
+        )
+        repository.login(1L, "secret1")
+        val viewModel = GroupInfoViewModel(repository)
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+        assertEquals(1, calls)
+
+        // Session 42 on another Oxype instance is a different group with different
+        // members, even though the account and the ids look the same.
+        repository.updateBaseUrl("http://other.example.test:12345")
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `entering the page again reloads instead of showing a stale roster`() = runTest {
+        var name = "旧名字"
+        val repository = repositoryWith(
+            signedIn(),
+            ScriptedTransport { _, route ->
+                when {
+                    route.startsWith("/getSessionInfo/") -> HttpResponse(200, detail(name = name))
+                    route.startsWith("/getSession/") -> HttpResponse(404, """{"error_message":"no"}""")
+                    route.startsWith("/getSessionUsers/") ->
+                        HttpResponse(200, """{"users":[{"userid":2,"username":"林间小道"}]}""")
+
+                    else -> null
+                }
+            },
+            backgroundScope
+        )
+        repository.login(1L, "secret1")
+        val viewModel = GroupInfoViewModel(repository)
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+        assertEquals("旧名字", viewModel.state.value.info?.name)
+
+        // A fresh visit (back from the chat, or the page opened again) asks the server:
+        // names, roles and the roster legitimately change while the app is open, and a
+        // page that only ever shows the first answer can never recover.
+        name = "新名字"
+        viewModel.open(42L, reload = true)
+        testScheduler.runCurrent()
+
+        assertEquals("新名字", viewModel.state.value.info?.name)
+    }
 }

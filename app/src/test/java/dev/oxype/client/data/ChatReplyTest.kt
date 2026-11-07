@@ -136,30 +136,62 @@ class ChatReplyTest {
 
     @Test
     fun `a sent reply comes back with its quote intact`() = runTest {
-        val stored = """
+        // The open page has only message 8, plain. The reply is *new*: it arrives as
+        // message 9 in the tail read after sending. A test that seeded the reply up
+        // front would pass even if the send-tail merge never ran.
+        val replyPieces = """
             [
               {"type":"reply","messageId":7,"sender":2,"senderName":"林间小道","text":"在那边等你们"},
               {"type":"text","text":"收到"}
             ]
         """.trimIndent()
-        val transport = openChatTransport(
-            sendResponse = HttpResponse(200, """{"data":{"seq":8}}"""),
-            storedPieces = stored
-        )
+        var reads = 0
+        val transport = ScriptedTransport { _, route ->
+            when {
+                route.startsWith("/login/") -> HttpResponse(200, """{"data":{"token":"tok"}}""")
+
+                route.startsWith("/lastMessage/") ->
+                    HttpResponse(200, """{"data":{"hasMessage":true,"id":8}}""")
+
+                route.startsWith("/getMessages/") -> {
+                    reads++
+                    val body = if (reads == 1) {
+                        """{"data":[{"id":8,"sender":1,"timestamp":1767225600000,
+                            "pieces":[{"type":"text","text":"之前那条"}]}]}"""
+                    } else {
+                        """{"data":[
+                            {"id":8,"sender":1,"timestamp":1767225600000,
+                             "pieces":[{"type":"text","text":"之前那条"}]},
+                            {"id":9,"sender":1,"timestamp":1767225660000,"pieces":$replyPieces}
+                        ]}"""
+                    }
+                    HttpResponse(200, body)
+                }
+
+                route.startsWith("/sendMessage/") -> HttpResponse(200, """{"data":{"seq":9}}""")
+
+                else -> null
+            }
+        }
         val repository = repositoryWith(FakeStorage(), transport, this)
 
         repository.login(1L, "pw")
         repository.openChat(42L)
-        // Overwrite the tail re-read so the sent sequence is present in the answer.
+        assertNull(
+            "precondition: the open must not have the quote yet",
+            repository.chat.value?.messages?.firstOrNull { it.id == 9L }
+        )
+
         val sent = repository.sendText("收到", replyTo = 7L)
 
         assertTrue(sent)
+        assertEquals("the open plus the send tail", 2, reads)
         val tailRequest = transport.requests.last { it.url.contains("/getMessages/") }
         val window = sendBody(tailRequest)
-        assertEquals(8L, window.getLong("end"))
-        assertEquals(4L, window.getLong("start"))
-        val message = repository.chat.value?.messages?.firstOrNull { it.id == 8L }
-        assertNotNull(message)
+        assertEquals(9L, window.getLong("end"))
+        assertEquals(5L, window.getLong("start"))
+        val message = repository.chat.value?.messages?.firstOrNull { it.id == 9L }
+        assertNotNull("the tail read must introduce the sent message", message)
         assertEquals(7L, message!!.reply?.messageId)
         assertEquals("在那边等你们", message.reply?.text)
         assertNull(repository.chat.value?.error)

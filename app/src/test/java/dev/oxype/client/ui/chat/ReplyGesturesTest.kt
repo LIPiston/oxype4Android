@@ -39,20 +39,39 @@ class ReplyGesturesTest {
     }
 
     @Test
-    fun `a double tap on the right side starts a reply`() {
-        assertTrue(isReplyDoubleTap(x = 80f, width = 100f))
+    fun `a double tap on the right side of the bubble starts a reply`() {
+        assertTrue(isReplyDoubleTapOnBubble(x = 80f, bubbleLeft = 0f, bubbleRight = 100f))
     }
 
     @Test
-    fun `a double tap on the left side does nothing`() {
+    fun `a double tap on the left side of the bubble does nothing`() {
         assertFalse(
             "the left side is reserved for a future reaction gesture",
-            isReplyDoubleTap(x = 20f, width = 100f)
+            isReplyDoubleTapOnBubble(x = 20f, bubbleLeft = 0f, bubbleRight = 100f)
         )
     }
 
     @Test
+    fun `a short bubble is judged by its own width, not the row`() {
+        // A one-word incoming bubble sits at 20..60 inside a 400dp row. Its right side is
+        // at x=50, which is far left of the row's midpoint — the row-relative split would
+        // have ignored the gesture.
+        assertTrue(isReplyDoubleTapOnBubble(x = 50f, bubbleLeft = 20f, bubbleRight = 60f))
+        assertFalse(
+            "x=40 is still the left half of this bubble",
+            isReplyDoubleTapOnBubble(x = 40f, bubbleLeft = 20f, bubbleRight = 60f)
+        )
+    }
+
+    @Test
+    fun `tapping the empty row beside the bubble does nothing`() {
+        // The bubble ends at 60; the rest of the row belongs to no message.
+        assertFalse(isReplyDoubleTapOnBubble(x = 200f, bubbleLeft = 20f, bubbleRight = 60f))
+        assertFalse(isReplyDoubleTapOnBubble(x = 0f, bubbleLeft = 20f, bubbleRight = 60f))
+    }
+
+    @Test
     fun `a zero-width bubble never claims a right side`() {
-        assertFalse(isReplyDoubleTap(x = 0f, width = 0f))
+        assertFalse(isReplyDoubleTapOnBubble(x = 0f, bubbleLeft = 0f, bubbleRight = 0f))
     }
 }

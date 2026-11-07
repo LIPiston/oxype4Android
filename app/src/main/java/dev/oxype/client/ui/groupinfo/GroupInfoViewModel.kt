@@ -48,21 +48,49 @@ class GroupInfoViewModel(private val repository: OxypeRepository) : ViewModel() 
     private var generation: Long = 0L
     private var loading: Job? = null
 
+    /**
+     * The login/server the currently shown page was loaded for.
+     *
+     * Compared with [authKey] before a re-bind: a cached page is only reusable for the
+     * exact identity that produced it.
+     */
+    private var boundAuthKey: String? = null
+
+    /**
+     * Identity a cached page belongs to.
+     *
+     * A user id is not enough: signing the same account in again issues a new token, and
+     * the same ids on another server are a different group entirely. Both the generation
+     * and the server address take part, so any of those changes forces a reload instead
+     * of showing the previous login's roster, roles and `（我）` marker.
+     */
+    private fun authKey(): String {
+        val owner = repository.authOwner()
+        val generation = owner?.generation ?: -1L
+        val userId = owner?.credentials?.userId ?: 0L
+        return "$generation|$userId|${repository.baseUrl()}"
+    }
+
     /** Binds the page to [sessionId] and loads it. */
-    fun open(sessionId: Long) {
+    fun open(sessionId: Long, reload: Boolean = false) {
         if (sessionId <= 0L) return
         val currentUserId = repository.currentUserId() ?: 0L
+        val key = authKey()
         if (
+            !reload &&
             sessionId == _state.value.sessionId &&
             _state.value.info != null &&
-            currentUserId == _state.value.currentUserId
+            key == boundAuthKey
         ) {
-            // Re-binding the same page (a rotation, or coming back from another screen)
-            // reuses what is already loaded: refetching would flash the spinner over
-            // content the user has already seen. A different account always reloads,
-            // because `（我）` and the role badges are computed for one login only.
+            // Re-binding the same page (a rotation) reuses what is already loaded:
+            // refetching would flash the spinner over content the user has already seen.
+            // Everything the page shows — `（我）`, the role badges, the roster — belongs
+            // to one login on one server, so a new key always reloads. `reload = true` is
+            // a fresh visit (returning from the chat) and asks the server again, because
+            // names, roles and membership change while the app is open.
             return
         }
+        boundAuthKey = key
         _state.value = GroupInfoUiState(
             sessionId = sessionId,
             isLoading = true,

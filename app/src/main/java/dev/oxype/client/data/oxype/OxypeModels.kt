@@ -150,11 +150,21 @@ data class CreatedSession(
 )
 
 /**
+ * A member's role in a group, decided once from ids.
+ *
+ * The header badge ("我是群主/我是管理员") and the per-member labels are two renderings
+ * of the same answer, so they are computed by one function ([GroupInfo.roleOf]) instead
+ * of each re-reading `ownerId`/`adminIds` with its own rules.
+ */
+enum class GroupRole { OWNER, ADMIN, MEMBER }
+
+/**
  * Everything the group info page needs, already merged and already decided.
  *
  * The screen renders this without a second lookup and without judging who is owner or
- * admin: [isOwner] and [isAdmin] are computed once from `ownerId`/`adminIds`, so the
- * header badge and the member row labels can never contradict each other.
+ * admin: [ownerId] and [adminIds] are normalised once by the repository (a boolean-only
+ * answer is folded into ids there), so the header badge and the member row labels can
+ * never contradict each other.
  */
 data class GroupInfo(
     val sessionId: Long,
@@ -169,6 +179,13 @@ data class GroupInfo(
 ) {
     val memberCount: Int
         get() = members.size
+
+    /** [userId]'s label in the roster. Owner wins over admin, as the badge does. */
+    fun roleOf(userId: Long): GroupRole = when {
+        ownerId > 0L && userId == ownerId -> GroupRole.OWNER
+        adminIds.contains(userId) -> GroupRole.ADMIN
+        else -> GroupRole.MEMBER
+    }
 }
 
 data class LastMessageInfo(

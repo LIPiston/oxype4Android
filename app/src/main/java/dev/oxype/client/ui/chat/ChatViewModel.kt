@@ -78,6 +78,16 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
     private var bindingGeneration: Long = 0L
 
     /**
+     * How many times the composer's quote selection changed.
+     *
+     * A send captures it and compares it on success: the composer is still usable while
+     * the request is in flight, so a target chosen in the meantime belongs to the *next*
+     * message and must survive this send's cleanup. It is bumped by
+     * [beginReply]/[cancelReply] and on every rebind.
+     */
+    private var replySelectionRevision: Long = 0L
+
+    /**
      * Whether the current binding ever got a first history page.
      *
      * It is what lets [refresh] tell "poll for new messages" apart from "retry the
@@ -302,6 +312,7 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
      */
     fun beginReply(message: ChatMessage) {
         if (message.id <= 0L) return
+        replySelectionRevision++
         _state.value = _state.value.copy(
             replyTarget = ReplyTarget(
                 messageId = message.id,
@@ -314,6 +325,7 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
     /** Drops the quote without touching the draft or the scroll position. */
     fun cancelReply() {
         if (_state.value.replyTarget == null) return
+        replySelectionRevision++
         _state.value = _state.value.copy(replyTarget = null)
     }
 
@@ -323,6 +335,10 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
         val generation = bindingGeneration
         val sessionId = _state.value.sessionId
         val replyTo = _state.value.replyTarget?.messageId
+        // Which quote this send consumes. The composer stays usable while the request is
+        // in flight, so the user may have pointed it at another message by the time the
+        // answer arrives; only *this* selection may be cleared on success.
+        val replyRevision = replySelectionRevision
         _state.value = _state.value.copy(draft = "", isSending = true)
         viewModelScope.launch {
             val sent = try {
@@ -345,9 +361,18 @@ class ChatViewModel(private val repository: OxypeRepository) : ViewModel() {
                     draft = _state.value.draft.ifEmpty { text }
                 )
             } else {
-                // Only a confirmed send consumes the quote. Clearing it in the failure
-                // branch would silently turn a retry into an unquoted message.
-                _state.value = _state.value.copy(isSending = false, replyTarget = null)
+                // Only a confirmed send consumes the quote, and only the one it was sent
+                // with. Clearing it in the failure branch would silently turn a retry into
+                // an unquoted message; clearing a newer selection would drop the quote the
+                // user picked for the next message.
+                _state.value = _state.value.copy(
+                    isSending = false,
+                    replyTarget = if (replySelectionRevision == replyRevision) {
+                        null
+                    } else {
+                        _state.value.replyTarget
+                    }
+                )
             }
         }
     }

@@ -1029,6 +1029,59 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `a send completing late keeps a reply target chosen while it was in flight`() = runTest {
+        // The reply menu and the gestures stay enabled while a message is sending, so a
+        // user can point the composer at B before A's send comes back. Clearing the
+        // target on success would send B without the quote the user picked.
+        val sendStarted = CompletableDeferred<Unit>()
+        val sendGate = CompletableDeferred<Unit>()
+        val transport = ScriptedTransport { _, route ->
+            when (route) {
+                "/receivedMessageSeq/1/9" -> HttpResponse(200, """{"data":{"seq":0}}""")
+                "/lastMessage/9" ->
+                    HttpResponse(200, """{"data":{"hasMessage":true,"id":2}}""")
+
+                "/getMessages/9" -> HttpResponse(
+                    200,
+                    """{"data":[
+                        {"id":1,"sender":2,"pieces":[{"type":"text","text":"第一条"}]},
+                        {"id":2,"sender":2,"pieces":[{"type":"text","text":"第二条"}]}
+                    ]}"""
+                )
+
+                "/sendMessage/9" -> {
+                    sendStarted.complete(Unit)
+                    sendGate.await()
+                    HttpResponse(200, """{"data":{"seq":3}}""")
+                }
+
+                else -> null
+            }
+        }
+        val repository = repositoryWith(signedInStorage(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ChatViewModel(repository)
+        viewModel.open(9, "群聊", "2 位成员")
+        testScheduler.runCurrent()
+        viewModel.beginReply(viewModel.state.value.messages.first { it.id == 1L })
+        viewModel.setDraft("先回这条")
+
+        viewModel.send()
+        sendStarted.await()
+        // A different quote is chosen before the first send answers.
+        viewModel.beginReply(viewModel.state.value.messages.first { it.id == 2L })
+        sendGate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "the newer target belongs to the next message, not the one just sent",
+            2L,
+            viewModel.state.value.replyTarget?.messageId
+        )
+        assertFalse(viewModel.state.value.isSending)
+    }
+
+    @Test
     fun `switching conversations clears the reply target`() = runTest {
         val transport = ScriptedTransport { _, route ->
             when (route) {

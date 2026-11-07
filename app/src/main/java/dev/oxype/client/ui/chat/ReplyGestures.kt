@@ -21,14 +21,23 @@ internal fun isReplySwipe(totalDx: Float, totalDy: Float, thresholdPx: Float): B
 }
 
 /**
- * A double tap on the right [RIGHT_TAP_FRACTION] of the bubble.
+ * A double tap on the right [RIGHT_TAP_FRACTION] of the bubble, whose horizontal extent
+ * is `bubbleLeft..bubbleRight` inside the tapped row.
  *
- * The split is a privacy of the gesture, not of the bubble: the left side is left alone
- * so a future reaction gesture can claim it without breaking this one.
+ * The measured bounds matter: a short bubble hugging the left edge has its own right
+ * side far left of the row's midpoint, and the empty row beside a bubble is not part of
+ * that message at all. Judging by the row width would miss the first and misfire on the
+ * second. The left side is left alone so a future reaction gesture can claim it.
  */
-internal fun isReplyDoubleTap(x: Float, width: Float): Boolean {
+internal fun isReplyDoubleTapOnBubble(
+    x: Float,
+    bubbleLeft: Float,
+    bubbleRight: Float
+): Boolean {
+    val width = bubbleRight - bubbleLeft
     if (width <= 0f) return false
-    return x >= width * RIGHT_TAP_FRACTION
+    if (x < bubbleLeft || x > bubbleRight) return false
+    return x - bubbleLeft >= width * RIGHT_TAP_FRACTION
 }
 
 /** Fraction of the bubble width, measured from the right edge, that starts a reply. */

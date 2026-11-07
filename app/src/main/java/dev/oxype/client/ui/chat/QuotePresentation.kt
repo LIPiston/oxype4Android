@@ -28,17 +28,24 @@ data class QuoteView(
  * snapshot: the block answers "who am I replying to", and the bubble's own side already
  * says the message is mine. Every other sender keeps the snapshot name, because Oxype
  * freezes it at send time and a later rename must not rewrite history.
+ *
+ * A snapshot may carry nothing but `messageId`. In that case [localSenderId] — the
+ * sender of the same id in the loaded window — is the only attribution available, and
+ * it has to be preferred over the generic label or a quote of my own message would read
+ * `未知用户`.
  */
 internal fun quoteAuthorName(
     quote: ReplyQuote,
     participants: Map<Long, SessionMember>,
-    currentUserId: Long
+    currentUserId: Long,
+    localSenderId: Long? = null
 ): String {
-    val senderId = quote.senderId
-    if (senderId != null && senderId > 0L && senderId == currentUserId) return SELF_SENDER_NAME
+    val snapshotSender = quote.senderId?.takeIf { it > 0L }
+    val senderId = snapshotSender ?: localSenderId?.takeIf { it > 0L }
+    if (senderId != null && senderId == currentUserId) return SELF_SENDER_NAME
     val fromSnapshot = quote.senderName?.trim()
     if (!fromSnapshot.isNullOrEmpty()) return fromSnapshot
-    if (senderId != null && senderId > 0L) {
+    if (senderId != null) {
         val fromDirectory = participants[senderId]?.username?.trim()
         if (!fromDirectory.isNullOrEmpty()) return fromDirectory
         return "$UNKNOWN_SENDER_NAME $senderId"
@@ -65,12 +72,20 @@ internal fun resolveQuote(
     participants: Map<Long, SessionMember>,
     loaded: Map<Long, ChatMessage>,
     currentUserId: Long
-): QuoteView = QuoteView(
-    author = quoteAuthorName(quote, participants, currentUserId),
-    body = quoteBodyText(quote, loaded[quote.messageId]),
-    targetMessageId = quote.messageId,
-    isJumpable = loaded.containsKey(quote.messageId)
-)
+): QuoteView {
+    val local = loaded[quote.messageId]
+    return QuoteView(
+        author = quoteAuthorName(
+            quote = quote,
+            participants = participants,
+            currentUserId = currentUserId,
+            localSenderId = local?.senderId
+        ),
+        body = quoteBodyText(quote, local),
+        targetMessageId = quote.messageId,
+        isJumpable = local != null
+    )
+}
 
 /**
  * How the quote block labels its own author.

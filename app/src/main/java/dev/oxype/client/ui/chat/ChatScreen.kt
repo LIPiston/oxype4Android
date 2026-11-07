@@ -402,15 +402,6 @@ private fun MessageBubbleWithActions(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .pointerInput(message.id) {
-                detectTapGestures(
-                    onTap = {},
-                    onLongPress = { onLongPress() },
-                    onDoubleTap = { position ->
-                        if (isReplyDoubleTap(position.x, size.width.toFloat())) onReply()
-                    }
-                )
-            }
             .pointerInput(message.id, thresholdPx) {
                 // The pointer's own total, kept separate from the animated value so the
                 // release decision never races the last snap.
@@ -465,7 +456,25 @@ private fun MessageBubbleWithActions(
                 showAvatar = isGroup,
                 quote = quote,
                 onQuoteClick = onQuoteClick,
-                isFlashing = isFlashing
+                isFlashing = isFlashing,
+                // Bounded by the bubble, not the row: the row spans the whole width and
+                // is mostly empty space beside a short message.
+                interactionModifier = Modifier.pointerInput(message.id) {
+                    detectTapGestures(
+                        onTap = {},
+                        onLongPress = { onLongPress() },
+                        onDoubleTap = { position ->
+                            if (isReplyDoubleTapOnBubble(
+                                    x = position.x,
+                                    bubbleLeft = 0f,
+                                    bubbleRight = size.width.toFloat()
+                                )
+                            ) {
+                                onReply()
+                            }
+                        }
+                    )
+                }
             )
         }
     }

@@ -67,6 +67,44 @@ class QuotePresentationTest {
     }
 
     @Test
+    fun `a quote without a sender id borrows the loaded message's sender`() {
+        // `messageId` is the only field the server is known to write, so an id-only
+        // quote must still be attributable when the original is on screen.
+        val quote = ReplyQuote(messageId = 7L, text = "原话")
+        val local = chatMessage(id = 7L, text = "原话", senderId = 2L)
+
+        assertEquals(
+            "林间小道",
+            resolveQuote(quote, participants, mapOf(7L to local), currentUserId = 1L).author
+        )
+    }
+
+    @Test
+    fun `an id-only quote of my own loaded message says so`() {
+        val quote = ReplyQuote(messageId = 7L, text = "我说的话")
+        val local = chatMessage(id = 7L, text = "我说的话", senderId = 1L)
+
+        assertEquals(
+            "我",
+            resolveQuote(quote, participants, mapOf(7L to local), currentUserId = 1L).author
+        )
+    }
+
+    @Test
+    fun `a snapshot sender id wins over the loaded message's sender`() {
+        // The snapshot is the frozen truth; the local copy may already have been
+        // replaced by an edit that changed nothing about who wrote it, but the rule
+        // still belongs to one place and it prefers what the server stamped.
+        val quote = ReplyQuote(messageId = 7L, senderId = 3L, text = "原话")
+        val local = chatMessage(id = 7L, text = "原话", senderId = 2L)
+
+        assertEquals(
+            "青柠",
+            resolveQuote(quote, participants, mapOf(7L to local), currentUserId = 1L).author
+        )
+    }
+
+    @Test
     fun `the body falls back to the locally loaded message`() {
         val quote = ReplyQuote(messageId = 7L, senderId = 2L)
         val local = chatMessage(id = 7L, text = "本地已加载的原话")
@@ -109,9 +147,9 @@ class QuotePresentationTest {
         assertEquals("原话", view.body)
     }
 
-    private fun chatMessage(id: Long, text: String): ChatMessage = ChatMessage(
+    private fun chatMessage(id: Long, text: String, senderId: Long = 2L): ChatMessage = ChatMessage(
         id = id,
-        senderId = 2L,
+        senderId = senderId,
         timestampMillis = 1767225600000,
         editedAtMillis = 0L,
         pieces = listOf(dev.oxype.client.data.oxype.MessagePiece(

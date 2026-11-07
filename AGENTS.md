@@ -103,16 +103,17 @@ app/src/main/java/dev/oxype/client/
 15. **`reply` 片段必须在 `pieces` 首位，且只发 `messageId`。** 服务端写发送者/名字/文本快照并拒绝非首位 reply（400）；客户端拼的快照会被忽略。编辑引用消息必须重发 reply 片段，否则保存后引用丢失（`OxypeApi.sendText`）。`reply` 不进入 `plainText`，也不参与"没有可显示内容"的判定。
 16. **引用解析只有 `messageId` 是硬依赖。** 缺它则丢弃整块引用但保留正文；`sender`/`senderName`/`text` 缺失时回退到本地已加载消息（作者名 → `用户 N` → `未知用户`，正文缺失不画那一行）。引用自己的消息，作者行**先判自己显示「我」**，再取快照名（`QuotePresentation.quoteAuthorName`，对应 spec §7）。
 17. **跳回原消息只在已加载窗口内。** 用 `ChatListItems.lazyIndexForMessage` 定位；不在窗口内时显示「原消息不在当前已加载的消息里」，不要伪造滚动位置。
-18. **回复目标只在成功发送、切会话、`close()`、登出时清除。** 发送失败必须同时保留 `replyTarget` 与草稿，让用户原样重试（`ChatViewModel.send`）。
-19. **进入群聊信息页不得关闭聊天。** `Destination.GroupInfo` 返回时只切回 `Destination.Chat`，不调用 `chatViewModel.close()`，否则转写、草稿与滚动位置全丢、并重跑首屏历史。`groupinfo` 的 saver 要带占位标题/副标题。
-20. **群主/管理员只有一个来源。** `ownerId`/`adminIds` + 当前用户 id 计算 `GroupInfo.isOwner`/`isAdmin`；服务端布尔仅在 id 缺失时回退。页面不得自行二次判断，否则头部徽标与成员行标签会互相矛盾（`OxypeRepository.loadGroupInfo`）。
+18. **回复目标只在成功发送、切会话、`close()`、登出时清除。** 发送失败必须同时保留 `replyTarget` 与草稿，让用户原样重试（`ChatViewModel.send`）。发送期间用户新选的引用目标属于**下一条消息**，成功回调只能清它自己那一次选择（`replySelectionRevision`）。
+19. **进入群聊信息页不得关闭聊天。** `Destination.GroupInfo` 返回时只切回 `Destination.Chat`，不调用 `chatViewModel.close()`，否则转写、草稿与滚动位置全丢、并重跑首屏历史。`groupinfo` 的 saver 要带占位标题/副标题。聊天的 `LazyListState` 由 `retainedChatSessionId` 提供的稳定键经 `SaveableStateHolder` 保留；真正离开会话时该键必须落回 `0`。
+20. **群主/管理员只有一个来源。** 先把服务端布尔-only 的答案折进 `ownerId`/`adminIds`，再统一按 id 计算 `isOwner`/`isAdmin`；头部徽标与成员行标签都经 `GroupInfo.roleOf`，页面不得自行二次判断（`OxypeRepository.loadGroupInfo`）。
+21. **群聊信息缓存绑定完整登录身份。** `generation|userId|baseUrl` 任一变化都必须重新加载；重新进入页面要重新请求（只有旋转复用缓存），否则会长期显示上一个账号/上一个服务器的成员与角色。
 
 ## 5. 测试与验证命令（Windows / Git Bash）
 
 在仓库根目录执行（Git Bash 下需带 `./`；cmd 里可写 `gradlew.bat`，PowerShell 需 `.\gradlew.bat`）。
 
 ```bash
-# 单元测试（JVM，无 Android/设备依赖；最近记录 324 个用例）
+# 单元测试（JVM，无 Android/设备依赖；最近记录 338 个用例）
 ./gradlew.bat --offline :app:testDebugUnitTest
 
 # 构建 debug APK，产物 app/build/outputs/apk/debug/app-debug.apk

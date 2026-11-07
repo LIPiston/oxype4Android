@@ -453,19 +453,32 @@ class OxypeRepository(
         }
 
         val currentUserId = owner.credentials.userId
-        val isOwner = if (detail.ownerId > 0L) detail.ownerId == currentUserId else detail.isOwner
-        val isAdmin = if (detail.ownerId > 0L || detail.adminIds.isNotEmpty()) {
-            isOwner || detail.adminIds.contains(currentUserId)
+        // Normalise a boolean-only answer into ids first. The header badge and the member
+        // rows are two renderings of one answer, so the fallback cannot stay a separate
+        // boolean that only the header reads.
+        val ownerId = if (detail.ownerId > 0L) {
+            detail.ownerId
+        } else if (detail.isOwner) {
+            currentUserId
         } else {
-            detail.isAdmin
+            0L
         }
+        val adminIds = if (detail.ownerId > 0L || detail.adminIds.isNotEmpty()) {
+            detail.adminIds
+        } else if (detail.isAdmin) {
+            listOf(currentUserId)
+        } else {
+            emptyList()
+        }
+        val isOwner = ownerId > 0L && ownerId == currentUserId
+        val isAdmin = isOwner || adminIds.contains(currentUserId)
 
         return GroupInfo(
             sessionId = detail.sessionId,
             name = detail.name,
             description = detail.description,
-            ownerId = detail.ownerId,
-            adminIds = detail.adminIds,
+            ownerId = ownerId,
+            adminIds = adminIds,
             members = members,
             avatarUrl = detail.avatarUrl,
             isOwner = isOwner,

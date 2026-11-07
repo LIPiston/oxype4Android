@@ -1,6 +1,7 @@
 package dev.oxype.client.data
 
 import dev.oxype.client.data.oxype.AuthCredentials
+import dev.oxype.client.data.oxype.GroupRole
 import dev.oxype.client.data.oxype.HttpResponse
 import dev.oxype.client.data.oxype.OxypeErrorKind
 import dev.oxype.client.data.oxype.OxypeException
@@ -197,6 +198,64 @@ class GroupInfoTest {
 
         assertFalse(info.isOwner)
         assertTrue(info.isAdmin)
+    }
+
+    @Test
+    fun `a boolean-only answer is folded into ids so the row and the header agree`() = runTest {
+        // A server that reports roles as booleans only (no owner/admin id lists) still
+        // says the current account is the owner. The header reads that; the member rows
+        // read ids. Folding the booleans into the ids once is what keeps the two from
+        // contradicting each other.
+        val transport = transport(
+            detail = """{"data":{"sessionId":42,"name":"群","isOwner":true,"isAdmin":true,
+                "users":[{"userid":1,"username":"alice"},{"userid":2,"username":"bob"}]}}"""
+        )
+        val repository = repositoryWith(signedIn(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+
+        val info = open(repository)
+
+        assertTrue(info.isOwner)
+        assertTrue(info.isAdmin)
+        assertEquals("the owner id must be filled in for the member row", 1L, info.ownerId)
+        assertEquals(GroupRole.OWNER, info.roleOf(1L))
+        assertEquals(GroupRole.MEMBER, info.roleOf(2L))
+    }
+
+    @Test
+    fun `a boolean-only admin becomes an admin row without claiming ownership`() = runTest {
+        val transport = transport(
+            detail = """{"data":{"sessionId":42,"name":"群","isOwner":false,"isAdmin":true,
+                "users":[{"userid":1,"username":"alice"},{"userid":2,"username":"bob"}]}}"""
+        )
+        val repository = repositoryWith(signedIn(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+
+        val info = open(repository)
+
+        assertFalse(info.isOwner)
+        assertTrue(info.isAdmin)
+        assertEquals(listOf(1L), info.adminIds)
+        assertEquals(GroupRole.ADMIN, info.roleOf(1L))
+    }
+
+    @Test
+    fun `an admin row label never contradicts the header`() = runTest {
+        // Both answers come from the same ids, so any input at all must agree.
+        val transport = transport(
+            detail = """{"data":{"sessionId":42,"name":"群","owner":2,"admins":[2],
+                "isOwner":true,"isAdmin":true,
+                "users":[{"userid":1,"username":"alice"},{"userid":2,"username":"bob"}]}}"""
+        )
+        val repository = repositoryWith(signedIn(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+
+        val info = open(repository)
+
+        assertFalse(info.isOwner)
+        assertFalse(info.isAdmin)
+        assertEquals(GroupRole.MEMBER, info.roleOf(1L))
+        assertEquals(GroupRole.OWNER, info.roleOf(2L))
     }
 
     @Test

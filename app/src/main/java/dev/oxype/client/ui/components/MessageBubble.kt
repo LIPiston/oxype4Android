@@ -50,6 +50,15 @@ fun MessageBubble(
     quote: QuoteView? = null,
     onQuoteClick: (() -> Unit)? = null,
     isFlashing: Boolean = false,
+    /**
+     * Pointer modifiers for the bubble itself.
+     *
+     * Gestures that are about *this message* (a long press for its menu, a double tap on
+     * its right side) belong on the bubble rather than the row: the row spans the whole
+     * screen and is mostly empty space, so a row-level tap detector would both miss a
+     * short bubble's right edge and fire on blank space beside it.
+     */
+    interactionModifier: Modifier = Modifier,
     modifier: Modifier = Modifier
 ) {
     val colors = oxypeColors
@@ -103,7 +112,9 @@ fun MessageBubble(
                     bottomEnd = if (isOutgoing) 4.dp else 14.dp
                 ),
                 tonalElevation = if (isOutgoing) 0.dp else 1.dp,
-                modifier = Modifier.widthIn(min = minBubbleWidth, max = maxBubbleWidth)
+                modifier = Modifier
+                    .widthIn(min = minBubbleWidth, max = maxBubbleWidth)
+                    .then(interactionModifier)
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (!isOutgoing && !senderLabel.isNullOrBlank()) {

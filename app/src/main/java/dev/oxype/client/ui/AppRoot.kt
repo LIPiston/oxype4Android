@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,6 +101,12 @@ fun AppRoot(container: AppContainer) {
     }
 
     OxypeTheme(darkTheme = darkTheme) {
+        // Chat-screen state that Compose owns — the LazyListState above all — is kept
+        // here. The group info page is a detour, not a departure: `retainedChatSessionId`
+        // stays the same across that switch, so the provider leaves composition (saving
+        // the list position) and comes back under the same key.
+        val chatScreenState = rememberSaveableStateHolder()
+        val retainedChatId = retainedChatSessionId(navigation.destination)
         if (navigation.restoring) {
             // A fresh process must not paint auth (or an empty chat) while the stored
             // token is still being verified: the placeholder holds the frame until the
@@ -153,18 +160,20 @@ fun AppRoot(container: AppContainer) {
                     navigation = navigation.copy(destination = Destination.Home)
                 }
                 BackHandler { leaveChat() }
-                ChatScreen(
-                    viewModel = chatViewModel,
-                    sessionId = current.sessionId,
-                    title = current.title,
-                    subtitle = current.subtitle,
-                    onBack = leaveChat,
-                    onOpenGroupInfo = { sessionId, title, subtitle ->
-                        navigation = navigation.copy(
-                            destination = Destination.GroupInfo(sessionId, title, subtitle)
-                        )
-                    }
-                )
+                chatScreenState.SaveableStateProvider(retainedChatId) {
+                    ChatScreen(
+                        viewModel = chatViewModel,
+                        sessionId = current.sessionId,
+                        title = current.title,
+                        subtitle = current.subtitle,
+                        onBack = leaveChat,
+                        onOpenGroupInfo = { sessionId, title, subtitle ->
+                            navigation = navigation.copy(
+                                destination = Destination.GroupInfo(sessionId, title, subtitle)
+                            )
+                        }
+                    )
+                }
             }
 
             is Destination.GroupInfo -> {
@@ -172,6 +181,8 @@ fun AppRoot(container: AppContainer) {
                 // transcript, the draft and the scroll position must survive the round
                 // trip. Re-composing ChatScreen hits the "same conversation" shortcut in
                 // `ChatViewModel.open`, and `repeatOnLifecycle` resumes the poll loop.
+                // The chat's saved state stays in `chatScreenState` untouched while this
+                // branch is on screen, so returning restores the same list position.
                 val backToChat = {
                     navigation = navigation.copy(
                         destination = Destination.Chat(

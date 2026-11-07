@@ -224,4 +224,31 @@ class AppNavigationTest {
         // property of the current process, not of the saved state.
         assertEquals(listOf("home"), navigationStateSaver.save(saving))
     }
+
+    @Test
+    fun `the chat keeps its screen state across a group info round trip`() {
+        // The list position is Compose-owned, so it only survives if the key under which
+        // it is remembered stays the same while the destination changes.
+        val chat = retainedChatSessionId(Destination.Chat(42L, "周末徒步小队", "5 位成员"))
+        val groupInfo = retainedChatSessionId(Destination.GroupInfo(42L, "周末徒步小队", "5 位成员"))
+
+        assertEquals(42L, chat)
+        assertEquals(
+            "opening the group info page must not look like leaving the conversation",
+            chat,
+            groupInfo
+        )
+    }
+
+    @Test
+    fun `leaving the conversation drops the retained chat state`() {
+        // A later open of the same id has to start at the newest message, so the key must
+        // fall back to "no conversation" as soon as the chat is really left.
+        assertEquals(0L, retainedChatSessionId(Destination.Home))
+        assertEquals(0L, retainedChatSessionId(Destination.Settings))
+        assertEquals(0L, retainedChatSessionId(Destination.Auth))
+
+        val otherChat = retainedChatSessionId(Destination.Chat(7L, "另一个会话", ""))
+        assertEquals("a different conversation is a different key", 7L, otherChat)
+    }
 }

@@ -324,8 +324,9 @@ ChatViewModel.deleteMessage(id) → repository.deleteMessage(id)
 触发：聊天页标题块可点（右侧"刷新"前有一条 `VerticalDivider`，所以点标题不会触发刷新）→ `onOpenGroupInfo(sessionId, title, subtitle)` → `Destination.GroupInfo(sessionId, title, subtitle)`。
 
 ```
-GroupInfoScreen(LaunchedEffect(sessionId)) → GroupInfoViewModel.open(sessionId)
-├─ 同 sessionId 且已加载且账号未变 → 直接复用（旋转、从聊天返回不闪 spinner）
+GroupInfoScreen(LaunchedEffect(sessionId)) → GroupInfoViewModel.open(sessionId, reload)
+├─ reload = 首次进入该页（旋转复用，不闪 spinner）
+├─ 缓存按 `generation|userId|baseUrl` 绑定：换账号/重新登录/换服务器都重新加载
 └─ 否则 isLoading = true → repository.loadGroupInfo(sessionId)
 
 loadGroupInfo(sessionId)
@@ -336,15 +337,20 @@ loadGroupInfo(sessionId)
 │    失败不致命：401 登出，其他一律返回空目录
 ├─ 合并：以 detail 的成员为准，directory 只补 username/avatarUrl，
 │        占位名"用户 N"才被替换，真实名不覆盖
-├─ isOwner = ownerId > 0 ? ownerId == currentUserId : 服务端 isOwner
-├─ isAdmin = (ownerId > 0 || adminIds 非空) ? isOwner || adminIds.contains(currentUserId)
-│                                                  : 服务端 isAdmin
+├─ 归一化：先服务端布尔-only 的答案折进 id
+│    ownerId = detail.ownerId > 0 ? detail.ownerId : (detail.isOwner ? currentUserId : 0)
+│    adminIds = (ownerId > 0 || detail.adminIds 非空) ? detail.adminIds
+│                                              : (detail.isAdmin ? [currentUserId] : [])
+├─ isOwner = ownerId == currentUserId
+├─ isAdmin = isOwner || adminIds.contains(currentUserId)
 └─ GroupInfo(sessionId, name, description, ownerId, adminIds, members, avatarUrl, isOwner, isAdmin)
 ```
 
-页面渲染 `GroupInfo` 时不再做第二次判断：头部的"我是群主/我是管理员"和成员行上的"群主/管理员"标签都来自同一份 `isOwner`/`isAdmin`，因此不可能互相矛盾。`title`/`subtitle` 只是从聊天页带过来的占位，答案到达后由 `info` 覆盖。
+页面渲染 `GroupInfo` 时不再做第二次判断：头部的"我是群主/我是管理员"来自 `isOwner`/`isAdmin`，成员行的标签来自同一个 `GroupInfo.roleOf(userId)`（它只读同一对 `ownerId`/`adminIds`），因此不可能互相矛盾。`title`/`subtitle` 只是从聊天页带过来的占位，答案到达后由 `info` 覆盖。
 
-`GroupInfoViewModel.open` 对同一个 `sessionId` + 同一个账号会复用已加载结果（旋转或从聊天返回都不闪 spinner）；`refresh()` 用于错误页的"重试"，会保留屏幕上的内容直到新答案到达。每次 `load` 自增自己的 `generation`，晚到的结果不得写进后来打开的页面。
+`GroupInfoViewModel.open(sessionId, reload)` 的缓存按 `generation|userId|baseUrl` 绑定：旋转时 `reload = false` 复用已加载结果（不闪 spinner），重新进入页面时 `reload = true` 重新问服务器（名字、角色、成员会变）；换账号、同一账号重新登录（新 token）或换服务器地址都会让缓存失效。`refresh()` 用于错误页的"重试"，会保留屏幕上的内容直到新答案到达。每次 `load` 自增自己的 `generation`，晚到的结果不得写进后来打开的页面。
+
+聊天页的滚动位置是 Compose 自己的状态（`rememberLazyListState`），用一个与目的地无关的键保留：`retainedChatSessionId` 对 `Chat(42)` 与 `GroupInfo(42)` 返回同一个值，所以从群聊信息返回时列表回到原处；一旦真正离开会话（列表/设置/另一个会话）就落回 `0`，下次打开从最新消息开始。
 
 导航：`Destination.GroupInfo` 用 saver key `groupinfo` 持久化（含占位标题），进程重建后直接回到该页；返回时**不调用** `chatViewModel.close()`，所以转写、草稿和滚动位置都还在，`repeatOnLifecycle` 会重新拉起轮询。
 

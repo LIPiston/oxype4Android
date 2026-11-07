@@ -63,6 +63,23 @@ internal data class NavigationState(
 }
 
 /**
+ * The conversation whose chat-screen state must outlive the current destination.
+ *
+ * Entering the group info page deliberately does not close the chat, so the transcript,
+ * the draft and the list position have to survive the round trip. The scroll position is
+ * Compose-owned (a `LazyListState`), and switching the destination would drop it unless
+ * the state is keyed by something that stays stable across that switch. This id is that
+ * key: it is equal for `Chat(42)` and `GroupInfo(42)`, and it falls to `0` as soon as the
+ * user leaves the conversation — list, settings, another chat — so a later open starts at
+ * the newest message instead of an old offset.
+ */
+internal fun retainedChatSessionId(destination: Destination): Long = when (destination) {
+    is Destination.Chat -> destination.sessionId
+    is Destination.GroupInfo -> destination.sessionId
+    Destination.Auth, Destination.Home, Destination.Settings -> 0L
+}
+
+/**
  * Persists [NavigationState] across configuration changes and process death.
  *
  * Without this a rotation re-executes the startup restore and would drop an open chat.

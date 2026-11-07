@@ -154,7 +154,7 @@
 1. `sessionInfo`（先 POST，失败或响应不完整再 GET）是**必需**的：401 清凭据；POST 的 403 会先尝试 GET，两者都不行时把第一个传输错误原样抛给页面（不清 token）。
 2. `sessionMembers` 是**补充**：失败只让成员名退回 `用户 N`；只有 401 会登出。
 3. 合并时以 `sessionInfo` 的成员为准，目录只补 `username`/`avatarUrl`；占位名才会被替换，真实名不覆盖。
-4. `isOwner`/`isAdmin` 由 `ownerId`/`adminIds` + 当前用户 id 决定，服务端布尔只在 id 缺失时回退（见 `GroupInfo`）。
+4. 角色：服务端只给布尔（`isOwner`/`isAdmin`，没有 id 列表）时，先把布尔折算成 id（`ownerId = 当前用户`、`adminIds = [当前用户]`），再统一按 id 计算 `isOwner`/`isAdmin`。头部的"我是…"与成员行的标签因此读的是同一对 id（`GroupInfo.roleOf`），不会一个说有、一个说没有。
 
 ### 5.8 `POST /createSession`
 

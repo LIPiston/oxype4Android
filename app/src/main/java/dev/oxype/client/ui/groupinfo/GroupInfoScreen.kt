@@ -25,6 +25,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.oxype.client.data.oxype.GroupInfo
+import dev.oxype.client.data.oxype.GroupRole
 import dev.oxype.client.data.oxype.SessionMember
 import dev.oxype.client.ui.components.SenderAvatar
 import dev.oxype.client.ui.theme.oxypeColors
@@ -60,8 +64,15 @@ fun GroupInfoScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = oxypeColors
 
+    // A fresh visit asks the server; a configuration change re-binds the page it already
+    // has. `visited` survives rotation, so turning the device does not re-fetch, while
+    // coming back from the chat (the screen is composed anew) does — names, roles and
+    // membership change while the app is open.
+    var visited by rememberSaveable(sessionId) { mutableStateOf(false) }
     LaunchedEffect(sessionId) {
-        viewModel.open(sessionId)
+        val fresh = !visited
+        visited = true
+        viewModel.open(sessionId, reload = fresh)
     }
 
     Scaffold(
@@ -144,8 +155,7 @@ fun GroupInfoScreen(
                             if (index > 0) HorizontalDivider(color = colors.divider)
                             MemberRow(
                                 member = member,
-                                isOwner = info.ownerId > 0L && member.userId == info.ownerId,
-                                isAdmin = info.adminIds.contains(member.userId),
+                                role = info.roleOf(member.userId),
                                 isCurrentUser = member.userId == state.currentUserId
                             )
                         }
@@ -170,8 +180,8 @@ fun GroupInfoScreen(
  * The header line under the group name.
  *
  * The role badge is appended here rather than drawn as a separate chip so the subtitle
- * stays one readable line. It is derived from the same `ownerId`/`adminIds` the member
- * rows use, so the two can never disagree.
+ * stays one readable line. It is derived from the same [GroupInfo.roleOf] the member rows
+ * use, so the two can never disagree.
  */
 internal fun groupInfoSubtitle(info: GroupInfo): String {
     val base = "群聊 · ${info.memberCount} 位成员"
@@ -245,12 +255,12 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
  *
  * The name is never blank; the repository already replaced an empty server name with
  * `用户 N`. `（我）` is a suffix rather than a separate column so the row stays one line.
+ * [role] comes from [GroupInfo.roleOf], the same function the header badge is built on.
  */
 @Composable
 private fun MemberRow(
     member: SessionMember,
-    isOwner: Boolean,
-    isAdmin: Boolean,
+    role: GroupRole,
     isCurrentUser: Boolean
 ) {
     val colors = oxypeColors
@@ -276,13 +286,15 @@ private fun MemberRow(
         )
         // Owner and admin are not exclusive in the data (an owner is also an admin), so
         // the stronger label wins rather than drawing both.
-        when {
-            isOwner -> RoleTag(label = "群主", background = colors.accent, content = colors.surface)
-            isAdmin -> RoleTag(
+        when (role) {
+            GroupRole.OWNER -> RoleTag(label = "群主", background = colors.accent, content = colors.surface)
+            GroupRole.ADMIN -> RoleTag(
                 label = "管理员",
                 background = colors.surfaceRaised,
                 content = colors.textSecondary
             )
+
+            GroupRole.MEMBER -> Unit
         }
     }
 }
