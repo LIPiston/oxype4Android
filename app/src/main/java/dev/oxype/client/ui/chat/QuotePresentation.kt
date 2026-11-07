@@ -11,7 +11,7 @@ import dev.oxype.client.data.oxype.SessionMember
  * is written by the server and its field spelling cannot be verified from here, so each
  * piece may be missing; whatever is missing is filled from data this client already has.
  */
-internal data class QuoteView(
+data class QuoteView(
     /** Name shown on the quote's first line. Never blank. */
     val author: String,
     /** Quoted body. Empty means "draw no body line", not "draw an empty line". */

@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.oxype.client.data.oxype.ChatMessage
+import dev.oxype.client.ui.chat.QuoteView
 import dev.oxype.client.ui.theme.oxypeColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -45,6 +46,8 @@ fun MessageBubble(
     senderLabel: String? = null,
     senderAvatarUrl: String? = null,
     showAvatar: Boolean = false,
+    quote: QuoteView? = null,
+    onQuoteClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = oxypeColors
@@ -101,6 +104,12 @@ fun MessageBubble(
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(Modifier.height(2.dp))
+                    }
+                    if (quoteBlockVisible(quote)) {
+                        QuoteBlock(
+                            quote = quote!!,
+                            onClick = { onQuoteClick?.invoke() }
+                        )
                     }
                     Text(
                         text = message.plainText.ifBlank { "（空消息）" },
