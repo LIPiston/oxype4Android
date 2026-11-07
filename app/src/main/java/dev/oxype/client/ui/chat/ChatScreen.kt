@@ -1,9 +1,10 @@
 package dev.oxype.client.ui.chat
 
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,12 +40,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -59,6 +65,7 @@ import dev.oxype.client.ui.theme.oxypeColors
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.launch
 
 /**
  * The transcript.
@@ -219,6 +226,7 @@ fun ChatScreen(
                                                 currentUserId = state.currentUserId
                                             )
                                         },
+                                        onReply = { viewModel.beginReply(row.message) },
                                         onLongPress = { actionTarget = row.message }
                                     )
 
@@ -292,8 +300,14 @@ fun ChatScreen(
 /**
  * One tappable bubble. Row ordering (including day dividers) comes from
  * [chatListItems], which places each divider above that day's messages.
+ *
+ * Three gestures start a reply and they must not fight each other or the list:
+ * a long press opens the action menu, a left drag past the threshold replies, and a
+ * double tap on the right side replies. The tap detector and the drag detector are
+ * separate `pointerInput`s, so a long press never swallows a drag and the drag never
+ * swallows a tap; the drag detector itself only begins after horizontal slop, which is
+ * what keeps vertical scrolling with the list.
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubbleWithActions(
     message: ChatMessage,
@@ -302,26 +316,91 @@ private fun MessageBubbleWithActions(
     senderLabel: String?,
     senderAvatarUrl: String?,
     quote: QuoteView?,
+    onReply: () -> Unit,
     onLongPress: () -> Unit,
     onQuoteClick: (() -> Unit)? = null
 ) {
+    val colors = oxypeColors
+    val density = LocalDensity.current.density
+    val thresholdPx = REPLY_SWIPE_THRESHOLD_DP * density
+    val maxOffsetPx = REPLY_SWIPE_MAX_OFFSET_DP * density
+    // Snapped while the finger moves, animated back to zero on release.
+    val offset = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+
     Box(
-        modifier = Modifier.combinedClickable(
-            onClick = {},
-            onLongClick = onLongPress
-        )
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(message.id) {
+                detectTapGestures(
+                    onTap = {},
+                    onLongPress = { onLongPress() },
+                    onDoubleTap = { position ->
+                        if (isReplyDoubleTap(position.x, size.width.toFloat())) onReply()
+                    }
+                )
+            }
+            .pointerInput(message.id, thresholdPx) {
+                // The pointer's own total, kept separate from the animated value so the
+                // release decision never races the last snap.
+                var total = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { total = 0f },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        total = (total + dragAmount).coerceIn(-maxOffsetPx, 0f)
+                        scope.launch { offset.snapTo(total) }
+                    },
+                    onDragEnd = {
+                        // Only a horizontal drag reaches this detector, so vertical
+                        // scrolling never gets here and stays with the list.
+                        if (isReplySwipe(total, 0f, thresholdPx)) onReply()
+                        total = 0f
+                        scope.launch { offset.animateTo(0f) }
+                    },
+                    onDragCancel = {
+                        total = 0f
+                        scope.launch { offset.animateTo(0f) }
+                    }
+                )
+            }
     ) {
-        MessageBubble(
-            message = message,
-            isOutgoing = isOutgoing,
-            senderLabel = if (isGroup) senderLabel else null,
-            senderAvatarUrl = senderAvatarUrl,
-            showAvatar = isGroup,
-            quote = quote,
-            onQuoteClick = onQuoteClick
-        )
+        // The hint stays put while the bubble slides, which is what makes the gesture
+        // read as "swipe towards the reply arrow".
+        val progress = (-offset.value / maxOffsetPx).coerceIn(0f, 1f)
+        if (progress > 0f) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 10.dp)
+                    .size(30.dp)
+                    .alpha(progress)
+                    .background(colors.accent, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "↩",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.surface
+                )
+            }
+        }
+        Box(modifier = Modifier.graphicsLayer { translationX = offset.value }) {
+            MessageBubble(
+                message = message,
+                isOutgoing = isOutgoing,
+                senderLabel = if (isGroup) senderLabel else null,
+                senderAvatarUrl = senderAvatarUrl,
+                showAvatar = isGroup,
+                quote = quote,
+                onQuoteClick = onQuoteClick
+            )
+        }
     }
 }
+
+private val REPLY_SWIPE_THRESHOLD_DP = 64f
+private val REPLY_SWIPE_MAX_OFFSET_DP = 72f
 
 @Composable
 private fun HistoryFooter(isLoadingOlder: Boolean, reachedTop: Boolean) {
