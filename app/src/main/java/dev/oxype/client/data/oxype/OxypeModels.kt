@@ -150,6 +150,40 @@ data class CreatedSession(
 )
 
 /**
+ * The caller's own account, as the server describes it.
+ *
+ * Oxype keeps three things about a person: the id, the name, and an avatar. There is no
+ * phone number, birthday, bio or presence field, so nothing else is modelled here.
+ *
+ * [avatarUrl] is already resolved against the configured server (or `null` when the
+ * account has no picture). The upload rules ride along because the server enforces them
+ * and the client wants to reject a bad picture before sending it.
+ */
+data class UserProfile(
+    val userId: Long,
+    val username: String,
+    val avatarUrl: String? = null,
+    val hasAvatar: Boolean = false,
+    val maxBytes: Long = DEFAULT_AVATAR_MAX_BYTES,
+    val maxEdge: Int = DEFAULT_AVATAR_MAX_EDGE,
+    val formats: List<String> = DEFAULT_AVATAR_FORMATS
+) {
+    companion object {
+        /**
+         * The server's own limits, mirrored as the fallback for an answer that omits them.
+         *
+         * They match `AvatarStorage` upstream: 3 MB after decoding and 4096 px per edge.
+         * A client-side default that was stricter would refuse pictures the server
+         * accepts, and a looser one would only move the rejection to the network.
+         */
+        const val DEFAULT_AVATAR_MAX_BYTES: Long = 3L * 1024 * 1024
+        const val DEFAULT_AVATAR_MAX_EDGE: Int = 4096
+        val DEFAULT_AVATAR_FORMATS: List<String> =
+            listOf("image/png", "image/jpeg", "image/webp", "image/gif")
+    }
+}
+
+/**
  * A member's role in a group, decided once from ids.
  *
  * The header badge ("我是群主/我是管理员") and the per-member labels are two renderings

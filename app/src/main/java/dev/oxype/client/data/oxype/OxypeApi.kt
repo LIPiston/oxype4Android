@@ -471,6 +471,140 @@ class OxypeApi(private val http: OxypeHttpClient) {
         }
     }
 
+    /**
+     * Reads the signed-in account's own profile.
+     *
+     * `GET /getUser/{uid}` supplies the name and the avatar URL, while
+     * `GET /getAvatar/{uid}` supplies the upload rules and the authoritative `hasAvatar`.
+     * They are merged rather than chained because the second route has its own permission
+     * rule (it is visible to accounts that share a session, not to every authenticated
+     * caller): a denial or a failure there must leave a usable name on screen instead of
+     * failing the whole page. The avatar URL itself comes from `getUser`, so the page can
+     * still draw the picture when `getAvatar` refuses.
+     */
+    suspend fun profile(credentials: AuthCredentials): UserProfile {
+        val user = http.get(path = "getUser/${credentials.userId}", credentials = credentials)
+        val json = user as? JSONObject
+            ?: throw OxypeException(OxypeErrorKind.PROTOCOL, "账号资料的响应格式不正确")
+        val userId = OxypeJson.long(json, "id", "userid", "userId")
+            ?: credentials.userId
+        val name = OxypeJson.string(json, "username", "name")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "用户 $userId"
+        val avatarUrl = avatarUrlOf(json)
+
+        val avatar = try {
+            http.get(path = "getAvatar/${credentials.userId}", credentials = credentials)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: OxypeException) {
+            if (e.kind == OxypeErrorKind.UNAUTHORIZED) throw e
+            null
+        } catch (e: Exception) {
+            null
+        }
+        return mergeProfile(userId, name, avatarUrl, avatar)
+    }
+
+    /**
+     * Uploads an avatar as base64 in a JSON body.
+     *
+     * The server accepts a `data:` URL prefix as well as a bare payload; the prefix is
+     * stripped here so both sides agree on one form and the request stays a few bytes
+     * smaller. Validation of the format and size happens before this call, in
+     * [dev.oxype.client.ui.profile.AvatarUploadRules].
+     */
+    suspend fun uploadAvatar(credentials: AuthCredentials, imageBase64: String): UserProfile {
+        val payload = http.postJson(
+            path = "uploadAvatar/${credentials.userId}",
+            body = JSONObject().apply {
+                put("image", stripDataUrlPrefix(imageBase64))
+            },
+            credentials = credentials
+        )
+        return parseAvatarAnswer(payload, credentials.userId)
+    }
+
+    /** `POST /removeAvatar/{uid}`: the account draws as an initial again. Idempotent. */
+    suspend fun removeAvatar(credentials: AuthCredentials): UserProfile {
+        val payload = http.postJson(
+            path = "removeAvatar/${credentials.userId}",
+            body = JSONObject(),
+            credentials = credentials
+        )
+        return parseAvatarAnswer(payload, credentials.userId)
+    }
+
+    /**
+     * Merges `getUser` with an optional `getAvatar` answer.
+     *
+     * `hasAvatar` is taken from `getAvatar` when it says something, and otherwise inferred
+     * from the URL, so a server that only reports the URL still gets a correct state.
+     */
+    private fun mergeProfile(
+        userId: Long,
+        username: String,
+        avatarUrl: String?,
+        avatarPayload: Any?
+    ): UserProfile {
+        val json = avatarPayload as? JSONObject
+        val mergedUrl = avatarUrl ?: json?.let { avatarUrlOf(it) }
+        return UserProfile(
+            userId = userId,
+            username = username,
+            avatarUrl = mergedUrl,
+            hasAvatar = OxypeJson.boolean(json ?: JSONObject(), "hasAvatar", "has_avatar")
+                ?: !mergedUrl.isNullOrBlank(),
+            maxBytes = OxypeJson.long(json ?: JSONObject(), "maxBytes", "max_bytes")
+                ?: UserProfile.DEFAULT_AVATAR_MAX_BYTES,
+            maxEdge = OxypeJson.long(json ?: JSONObject(), "maxEdge", "max_edge")
+                ?.toInt()
+                ?: UserProfile.DEFAULT_AVATAR_MAX_EDGE,
+            formats = formatsOf(json)
+        )
+    }
+
+    /** Reads an avatar-route answer (upload/remove), which is a full avatar view. */
+    private fun parseAvatarAnswer(payload: Any?, userId: Long): UserProfile {
+        val json = payload as? JSONObject
+            ?: throw OxypeException(OxypeErrorKind.PROTOCOL, "头像操作的响应格式不正确")
+        val url = avatarUrlOf(json)
+        return UserProfile(
+            userId = OxypeJson.long(json, "id", "userid", "userId") ?: userId,
+            username = OxypeJson.string(json, "name", "username")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: "用户 $userId",
+            avatarUrl = url,
+            hasAvatar = OxypeJson.boolean(json, "hasAvatar", "has_avatar")
+                ?: !url.isNullOrBlank(),
+            maxBytes = OxypeJson.long(json, "maxBytes", "max_bytes")
+                ?: UserProfile.DEFAULT_AVATAR_MAX_BYTES,
+            maxEdge = OxypeJson.long(json, "maxEdge", "max_edge")
+                ?.toInt()
+                ?: UserProfile.DEFAULT_AVATAR_MAX_EDGE,
+            formats = formatsOf(json)
+        )
+    }
+
+    private fun formatsOf(json: JSONObject?): List<String> {
+        if (json == null) return UserProfile.DEFAULT_AVATAR_FORMATS
+        val array = OxypeJson.arrayOf(json, "formats") ?: return UserProfile.DEFAULT_AVATAR_FORMATS
+        val formats = (0 until array.length())
+            .mapNotNull { array.opt(it) as? String }
+            .filter { it.isNotBlank() }
+        return formats.ifEmpty { UserProfile.DEFAULT_AVATAR_FORMATS }
+    }
+
+    /** Removes an optional `data:<mime>;base64,` prefix from an encoded image. */
+    private fun stripDataUrlPrefix(value: String): String {
+        val trimmed = value.trim()
+        if (!trimmed.startsWith("data:")) return trimmed
+        val comma = trimmed.indexOf(',')
+        return if (comma == -1) trimmed else trimmed.substring(comma + 1)
+    }
+
     private fun parseSessions(payload: Any?): List<SessionSummary> {
         val array = OxypeJson.arrayOf(payload, "sessions", "list") ?: return emptyList()
         return OxypeJson.objects(array).mapNotNull { entry ->
