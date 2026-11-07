@@ -10,6 +10,7 @@ import dev.oxype.client.data.session.SessionStore
 import dev.oxype.client.data.session.ThemeMode
 import dev.oxype.client.ui.auth.AuthViewModel
 import dev.oxype.client.ui.chat.ChatViewModel
+import dev.oxype.client.ui.groupinfo.GroupInfoViewModel
 import dev.oxype.client.ui.home.HomeViewModel
 import dev.oxype.client.ui.settings.SettingsViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -93,6 +94,9 @@ class OxypeViewModelFactory(private val container: AppContainer) : ViewModelProv
 
             modelClass.isAssignableFrom(ChatViewModel::class.java) ->
                 ChatViewModel(repository) as T
+
+            modelClass.isAssignableFrom(GroupInfoViewModel::class.java) ->
+                GroupInfoViewModel(repository) as T
 
             modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
                 SettingsViewModel(repository, container) as T
