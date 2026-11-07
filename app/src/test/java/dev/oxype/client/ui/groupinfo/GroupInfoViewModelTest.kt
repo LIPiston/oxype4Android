@@ -160,8 +160,7 @@ class GroupInfoViewModelTest {
     }
 
     @Test
-    fun `dismissing the error clears it`() = runTest {
-        val repository = repositoryWith(
+    fun `dismissing the error clears it`() = runTest {        val repository = repositoryWith(
             signedIn(),
             transport(sessionInfo = { HttpResponse(403, """{"error_message":"forbidden"}""") }),
             backgroundScope
@@ -175,5 +174,42 @@ class GroupInfoViewModelTest {
         viewModel.consumeError()
 
         assertNull(viewModel.state.value.error)
+    }
+
+    @Test
+    fun `re-opening the same session keeps what is already loaded`() = runTest {
+        var calls = 0
+        val repository = repositoryWith(
+            signedIn(),
+            ScriptedTransport { _, route ->
+                when {
+                    route.startsWith("/getSessionInfo/") -> {
+                        calls++
+                        HttpResponse(200, detail())
+                    }
+
+                    route.startsWith("/getSession/") -> HttpResponse(404, """{"error_message":"no"}""")
+                    route.startsWith("/getSessionUsers/") ->
+                        HttpResponse(200, """{"users":[{"userid":2,"username":"林间小道"}]}""")
+
+                    else -> null
+                }
+            },
+            backgroundScope
+        )
+        repository.login(1L, "secret1")
+        val viewModel = GroupInfoViewModel(repository)
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+        assertEquals(1, calls)
+
+        // Coming back to the page (a rotation, or a round trip through the chat) must not
+        // flash the spinner over content the user has already seen.
+        viewModel.open(42L)
+        testScheduler.runCurrent()
+
+        assertEquals(1, calls)
+        assertFalse(viewModel.state.value.isLoading)
+        assertEquals("周末徒步小队", viewModel.state.value.info?.name)
     }
 }

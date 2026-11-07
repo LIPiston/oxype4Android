@@ -6,6 +6,20 @@ internal sealed interface Destination {
     data object Home : Destination
     data object Settings : Destination
     data class Chat(val sessionId: Long, val title: String, val subtitle: String) : Destination
+
+    /**
+     * The full-page group info screen.
+     *
+     * [title] and [subtitle] are the header placeholder taken from the chat screen, not
+     * the answer: the page draws them while the detail request is in flight (and if it
+     * fails), so opening it never flashes an empty header. They are saved with the
+     * destination for the same reason — a rebuilt process would otherwise start blank.
+     */
+    data class GroupInfo(
+        val sessionId: Long,
+        val title: String,
+        val subtitle: String
+    ) : Destination
 }
 
 /**
@@ -68,6 +82,13 @@ internal object navigationStateSaver {
             current.title,
             current.subtitle
         )
+
+        is Destination.GroupInfo -> listOf(
+            "groupinfo",
+            current.sessionId.toString(),
+            current.title,
+            current.subtitle
+        )
     }
 
     /**
@@ -84,6 +105,12 @@ internal object navigationStateSaver {
             "home" -> Destination.Home
             "settings" -> Destination.Settings
             "chat" -> Destination.Chat(
+                sessionId = saved.getOrNull(1)?.toLongOrNull() ?: 0L,
+                title = saved.getOrNull(2).orEmpty(),
+                subtitle = saved.getOrNull(3).orEmpty()
+            )
+
+            "groupinfo" -> Destination.GroupInfo(
                 sessionId = saved.getOrNull(1)?.toLongOrNull() ?: 0L,
                 title = saved.getOrNull(2).orEmpty(),
                 subtitle = saved.getOrNull(3).orEmpty()

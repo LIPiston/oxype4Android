@@ -51,8 +51,16 @@ class GroupInfoViewModel(private val repository: OxypeRepository) : ViewModel() 
     /** Binds the page to [sessionId] and loads it. */
     fun open(sessionId: Long) {
         if (sessionId <= 0L) return
-        if (sessionId == _state.value.sessionId && _state.value.info != null) {
-            // Re-binding the same page (a rotation) must not refetch what is on screen.
+        val currentUserId = repository.currentUserId() ?: 0L
+        if (
+            sessionId == _state.value.sessionId &&
+            _state.value.info != null &&
+            currentUserId == _state.value.currentUserId
+        ) {
+            // Re-binding the same page (a rotation, or coming back from another screen)
+            // reuses what is already loaded: refetching would flash the spinner over
+            // content the user has already seen. A different account always reloads,
+            // because `（我）` and the role badges are computed for one login only.
             return
         }
         _state.value = GroupInfoUiState(
@@ -60,7 +68,7 @@ class GroupInfoViewModel(private val repository: OxypeRepository) : ViewModel() 
             isLoading = true,
             info = null,
             error = null,
-            currentUserId = repository.currentUserId() ?: 0L
+            currentUserId = currentUserId
         )
         load(sessionId)
     }

@@ -24,6 +24,8 @@ import dev.oxype.client.ui.auth.AuthScreen
 import dev.oxype.client.ui.auth.AuthViewModel
 import dev.oxype.client.ui.chat.ChatScreen
 import dev.oxype.client.ui.chat.ChatViewModel
+import dev.oxype.client.ui.groupinfo.GroupInfoScreen
+import dev.oxype.client.ui.groupinfo.GroupInfoViewModel
 import dev.oxype.client.ui.home.HomeScreen
 import dev.oxype.client.ui.home.HomeViewModel
 import dev.oxype.client.ui.settings.SettingsScreen
@@ -64,6 +66,7 @@ fun AppRoot(container: AppContainer) {
     val authViewModel: AuthViewModel = viewModel(factory = factory)
     val homeViewModel: HomeViewModel = viewModel(factory = factory)
     val chatViewModel: ChatViewModel = viewModel(factory = factory)
+    val groupInfoViewModel: GroupInfoViewModel = viewModel(factory = factory)
     val settingsViewModel: SettingsViewModel = viewModel(factory = factory)
 
     // Startup: a stored token is verified before the list is shown. A dead token sends
@@ -155,7 +158,36 @@ fun AppRoot(container: AppContainer) {
                     sessionId = current.sessionId,
                     title = current.title,
                     subtitle = current.subtitle,
-                    onBack = leaveChat
+                    onBack = leaveChat,
+                    onOpenGroupInfo = { sessionId, title, subtitle ->
+                        navigation = navigation.copy(
+                            destination = Destination.GroupInfo(sessionId, title, subtitle)
+                        )
+                    }
+                )
+            }
+
+            is Destination.GroupInfo -> {
+                // Back goes to the chat, and *not* through `chatViewModel.close()`: the
+                // transcript, the draft and the scroll position must survive the round
+                // trip. Re-composing ChatScreen hits the "same conversation" shortcut in
+                // `ChatViewModel.open`, and `repeatOnLifecycle` resumes the poll loop.
+                val backToChat = {
+                    navigation = navigation.copy(
+                        destination = Destination.Chat(
+                            sessionId = current.sessionId,
+                            title = current.title,
+                            subtitle = current.subtitle
+                        )
+                    )
+                }
+                BackHandler { backToChat() }
+                GroupInfoScreen(
+                    viewModel = groupInfoViewModel,
+                    sessionId = current.sessionId,
+                    title = current.title,
+                    subtitle = current.subtitle,
+                    onBack = backToChat
                 )
             }
         }

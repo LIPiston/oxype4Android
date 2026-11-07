@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,6 +88,7 @@ fun ChatScreen(
     title: String,
     subtitle: String,
     onBack: () -> Unit,
+    onOpenGroupInfo: (Long, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -177,7 +179,20 @@ fun ChatScreen(
                     TextButton(onClick = onBack) { Text("返回") }
                 },
                 title = {
-                    Column {
+                    // The whole title block is the entry point to the group info page, so
+                    // the tap target matches what users expect from a group chat header.
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                onOpenGroupInfo(
+                                    sessionId,
+                                    state.title.ifBlank { title },
+                                    state.subtitle.ifBlank { subtitle }
+                                )
+                            }
+                            .padding(vertical = 4.dp)
+                    ) {
                         Text(
                             text = state.title.ifBlank { title },
                             style = MaterialTheme.typography.titleMedium,
@@ -194,6 +209,12 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // A visible seam between "the chat header" and "an action on the chat":
+                    // tapping the left side opens the group page and never refreshes.
+                    VerticalDivider(
+                        modifier = Modifier.height(20.dp),
+                        color = colors.divider
+                    )
                     TextButton(onClick = viewModel::refresh) { Text("刷新") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

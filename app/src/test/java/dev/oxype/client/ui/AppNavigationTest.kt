@@ -178,6 +178,45 @@ class AppNavigationTest {
     }
 
     @Test
+    fun `the group info page saves and restores with its placeholder header`() {
+        val original = NavigationState(
+            restoring = false,
+            destination = Destination.GroupInfo(42L, "周末徒步小队", "5 位成员")
+        )
+
+        // The title and subtitle are only the loading placeholder, but they are the whole
+        // header until the server answers — losing them after process death would paint an
+        // empty page instead of the conversation the user was looking at.
+        val restored = navigationStateSaver.restore(
+            navigationStateSaver.save(original),
+            restoring = false
+        )
+
+        assertEquals(original, restored)
+        assertEquals("groupinfo", navigationStateSaver.save(original).first())
+    }
+
+    @Test
+    fun `an unknown saved destination falls back to auth`() {
+        val restored = navigationStateSaver.restore(
+            listOf("something-new", "1", "x", "y"),
+            restoring = false
+        )
+
+        assertEquals(Destination.Auth, restored.destination)
+    }
+
+    @Test
+    fun `losing credentials on the group info page returns to auth`() {
+        val groupInfo = NavigationState(
+            restoring = false,
+            destination = Destination.GroupInfo(42L, "周末徒步小队", "5 位成员")
+        )
+
+        assertEquals(Destination.Auth, groupInfo.credentialsChanged(present = false).destination)
+    }
+
+    @Test
     fun `the restore gate is not persisted with the destination`() {
         val saving = NavigationState(restoring = false, destination = Destination.Home)
 
