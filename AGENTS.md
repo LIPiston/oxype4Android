@@ -65,9 +65,10 @@ app/src/main/java/dev/oxype/client/
     │                               + QuotePresentation（引用作者/正文/可跳转）+ ReplyGestures（左滑/双击）
     ├── groupinfo/                  GroupInfoScreen + GroupInfoViewModel（整页群聊信息）
     ├── profile/                    ProfileScreen + ProfileViewModel + AvatarPicker + AvatarEncoding
-    │                               + AvatarUploadRules（纯 Kotlin：格式/尺寸/大小校验）
+    │                               + BoundedRead（读取上限）+ AvatarUploadRules（纯 Kotlin：格式/尺寸/大小校验）
     ├── components/                 MessageBubble、QuoteBlock、BubbleWidthPolicy、SenderAvatar、
-    │                               AvatarImageLimits、SessionRow、OxypeBottomBar（三入口胶囊底栏）
+    │                               AvatarImageLimits、SessionRow、OxypeBottomBar（三入口胶囊底栏）、
+    │                               BottomBarMetrics（底栏高度/内容与 snackbar 的让位口径）
     ├── settings/                   SettingsScreen + SettingsViewModel（账户入口、地址、主题、退出、许可）
     └── theme/                      OxypeTheme / OxypeColors / oxypeColors
 ```
@@ -109,15 +110,19 @@ app/src/main/java/dev/oxype/client/
 19. **进入群聊信息页不得关闭聊天。** `Destination.GroupInfo` 返回时只切回 `Destination.Chat`，不调用 `chatViewModel.close()`，否则转写、草稿与滚动位置全丢、并重跑首屏历史。`groupinfo` 的 saver 要带占位标题/副标题。聊天的 `LazyListState` 由 `retainedChatSessionId` 提供的稳定键经 `SaveableStateHolder` 保留；真正离开会话时该键必须落回 `0`。
 20. **群主/管理员只有一个来源。** 先把服务端布尔-only 的答案折进 `ownerId`/`adminIds`，再统一按 id 计算 `isOwner`/`isAdmin`；头部徽标与成员行标签都经 `GroupInfo.roleOf`，页面不得自行二次判断（`OxypeRepository.loadGroupInfo`）。
 21. **群聊信息缓存绑定完整登录身份。** `generation|userId|baseUrl` 任一变化都必须重新加载；重新进入页面要重新请求（只有旋转复用缓存），否则会长期显示上一个账号/上一个服务器的成员与角色。
-22. **个人资料缓存绑定同一个身份键。** `ProfileSnapshot.identity = generation|userId|baseUrl`；`loadProfile` / `uploadAvatar` / `removeAvatar` 在第一次挂起前取 `AuthOwner`，回来先用 `isCurrentAuth` 校验再发布。`login` / `signOutLocally` 都要 `clearProfile()`。资料页的 401 走 `invalidateCredentials(owner)`，403 只做行内提示（上传自己的头像不会 403，但共享会话之外的 `getAvatar` 会）。头像**存服务器**（`/avatar/u<id>-<hash>.<ext>`），客户端不落盘、只做内存图片缓存。
+22. **个人资料缓存绑定同一个身份键。** `ProfileSnapshot.identity = generation|userId|baseUrl`；`loadProfile` / `uploadAvatar` / `removeAvatar` 在第一次挂起前取 `AuthOwner`，回来先用 `isCurrentAuth` 校验再发布。`login` / `signOutLocally` / `updateBaseUrl`（地址真的变了时）都要 `clearProfile()`。`ProfileUiState.identity` 必须跟着同一把键走：换账号/换服务器后重开页面，先把可见字段清空再进入 loading，否则复用同一个 ViewModel 时会把上一个人的名字和头像画给下一个人。资料页的 401 走 `invalidateCredentials(owner)`，403 只做行内提示（上传自己的头像不会 403，但共享会话之外的 `getAvatar` 会）。头像**存服务器**（`/avatar/u<id>-<hash>.<ext>`），客户端不落盘、只做内存图片缓存。
 23. **头像上传的本地校验必须与服务端同规则。** 格式按 magic bytes、长度上限 3 MB、任一边 4096（`AvatarUploadRules`，纯 Kotlin，有 JVM 测试）；不要按扩展名或声明 MIME 判断，也不要在头部读不出尺寸时按尺寸拒绝。图片选择后的解码/缩放/重编码只在 `Dispatchers.Default` 上做（`AvatarPicker`），失败给可读文案而不是抛异常。
+24. **读图片流必须限流。** `InputStream.readBytes()` 会在长度检查之前把整条流读进内存，第三方 provider 给出的流可以远大于声明的图片；用 `readAtMost(MAX_BYTES)`（`BoundedRead.kt`），超过上限的第一个字节就放弃。解码、缩放、编码三段的分配失败都要转成可读拒绝（`attempt {}`），并在 `finally` 里回收两个 bitmap——只包住 decode 会让后半段的 OOM 直接崩掉进程。
+25. **资料读写的先后顺序由 revision 定，不由到达顺序定。** `loadProfile` 记下 `profileRevision`，回来时若上传/移除已经落地就丢弃这次读（返回当前快照）；上传/移除成功各自 `profileRevision++`。ViewModel 侧对应的是 `generation`：发起上传/移除也算一次代际变化，且它自己的完成路径必须清掉 `isUploading`/`isRemoving`——refresh 不能把正在进行的动作的 busy 状态永久卡住。
+26. **浮动底栏的让位口径只有一个来源。** `BottomBarMetrics` 给出胶囊高度、snackbar 抬升量和内容尾部留白；三个 section 的 `SnackbarHost` 都用 `SNACKBAR_LIFT` 上抬（Scaffold 自己的底部 inset 只到系统导航区，底栏画在它上面），列表尾部用 `CONTENT_INSET`。胶囊位移按**整格**算（`selectionCapsuleOffsetInSlots`），不是按胶囊自身宽度——胶囊左右各内缩 6dp，按自身宽度推进会越滑越偏左。
+27. **退出聊天时，saver 键取自被组合的目的地。** `chatStateKeyFor(content, live)` 只用 `content`；`AnimatedContent` 在出场动画期间仍在组合旧的 `Destination.Chat`，此时 `live` 已经是 `Chats`。键若跟着 `live` 走会变成 `0`，provider 被重建、`LaunchedEffect` 重启，还会把离场会话的滚动位置存到错误的键下。从列表真正打开一个会话时用 `chatScreenState.removeState(sessionId)` 丢掉旧偏移；群聊信息往返不走这条路径，所以位置保留。
 
 ## 5. 测试与验证命令（Windows / Git Bash）
 
 在仓库根目录执行（Git Bash 下需带 `./`；cmd 里可写 `gradlew.bat`，PowerShell 需 `.\gradlew.bat`）。
 
 ```bash
-# 单元测试（JVM，无 Android/设备依赖；最近记录 395 个用例 / 31 个测试类）
+# 单元测试（JVM，无 Android/设备依赖；最近记录 421 个用例 / 35 个测试类）
 ./gradlew.bat --offline :app:testDebugUnitTest
 
 # 构建 debug APK，产物 app/build/outputs/apk/debug/app-debug.apk
@@ -141,7 +146,7 @@ grep -ho 'failures="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | gr
 - HTML 报告：`app/build/reports/tests/testDebugUnitTest/index.html`。
 - Lint 文本结果：`app/build/reports/lint-results-debug.txt`。
 
-测试位于 `app/src/test/java/dev/oxype/client/`，共 31 个测试类。`testsupport/TestSupport.kt` 提供 `FakeSessionStorage`（内存版 `SessionStorage`）与 `ScriptedTransport`（按路由脚本化的 `HttpTransport`）。新行为必须用这两者写可回归的 JVM 测试，不要新增只在真机上能跑的断言。
+测试位于 `app/src/test/java/dev/oxype/client/`，共 35 个测试类。`testsupport/TestSupport.kt` 提供 `FakeSessionStorage`（内存版 `SessionStorage`）与 `ScriptedTransport`（按路由脚本化的 `HttpTransport`）。新行为必须用这两者写可回归的 JVM 测试，不要新增只在真机上能跑的断言。
 
 ## 6. 本机联调（fixture，不是真实服务器）
 
