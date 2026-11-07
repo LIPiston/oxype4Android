@@ -106,10 +106,7 @@ fun MessageBubble(
                         Spacer(Modifier.height(2.dp))
                     }
                     if (quoteBlockVisible(quote)) {
-                        QuoteBlock(
-                            quote = quote!!,
-                            onClick = { onQuoteClick?.invoke() }
-                        )
+                        QuoteBlock(quote = quote!!, onClick = onQuoteClick)
                     }
                     Text(
                         text = message.plainText.ifBlank { "（空消息）" },

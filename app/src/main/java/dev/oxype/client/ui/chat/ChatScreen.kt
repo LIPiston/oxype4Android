@@ -2,6 +2,7 @@ package dev.oxype.client.ui.chat
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,8 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -80,6 +84,9 @@ fun ChatScreen(
     val clipboard = LocalClipboardManager.current
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var confirmDelete by remember { mutableStateOf<ChatMessage?>(null) }
+    // Quote bodies fall back to the loaded message when the server snapshot is partial,
+    // so the index is built once per transcript rather than once per bubble.
+    val loadedMessages = remember(state.messages) { state.messages.associateBy { it.id } }
 
     LaunchedEffect(sessionId) {
         viewModel.open(sessionId, title, subtitle)
@@ -204,6 +211,14 @@ fun ChatScreen(
                                             senderDisplayName(row.message.senderId, state.participants)
                                         },
                                         senderAvatarUrl = state.participants[row.message.senderId]?.avatarUrl,
+                                        quote = row.message.reply?.let { quote ->
+                                            resolveQuote(
+                                                quote = quote,
+                                                participants = state.participants,
+                                                loaded = loadedMessages,
+                                                currentUserId = state.currentUserId
+                                            )
+                                        },
                                         onLongPress = { actionTarget = row.message }
                                     )
 
@@ -224,8 +239,10 @@ fun ChatScreen(
             MessageComposer(
                 draft = state.draft,
                 isSending = state.isSending,
+                replyTarget = state.replyTarget,
                 onDraftChange = viewModel::setDraft,
-                onSend = viewModel::send
+                onSend = viewModel::send,
+                onCancelReply = viewModel::cancelReply
             )
         }
     }
@@ -235,6 +252,10 @@ fun ChatScreen(
         MessageActionsDialog(
             message = target,
             canDelete = target.senderId == state.currentUserId,
+            onReply = {
+                viewModel.beginReply(target)
+                actionTarget = null
+            },
             onCopy = {
                 clipboard.setText(AnnotatedString(target.plainText))
                 actionTarget = null
@@ -280,7 +301,9 @@ private fun MessageBubbleWithActions(
     isGroup: Boolean,
     senderLabel: String?,
     senderAvatarUrl: String?,
-    onLongPress: () -> Unit
+    quote: QuoteView?,
+    onLongPress: () -> Unit,
+    onQuoteClick: (() -> Unit)? = null
 ) {
     Box(
         modifier = Modifier.combinedClickable(
@@ -293,7 +316,9 @@ private fun MessageBubbleWithActions(
             isOutgoing = isOutgoing,
             senderLabel = if (isGroup) senderLabel else null,
             senderAvatarUrl = senderAvatarUrl,
-            showAvatar = isGroup
+            showAvatar = isGroup,
+            quote = quote,
+            onQuoteClick = onQuoteClick
         )
     }
 }
@@ -350,48 +375,119 @@ private fun ErrorStrip(message: String, onDismiss: () -> Unit) {
 private fun MessageComposer(
     draft: String,
     isSending: Boolean,
+    replyTarget: ReplyTarget?,
     onDraftChange: (String) -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onCancelReply: () -> Unit
 ) {
     val colors = oxypeColors
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.surface)
             .navigationBarsPadding()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.Bottom
+            .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            placeholder = { Text("输入消息") },
-            maxLines = 4,
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(Modifier.width(8.dp))
-        TextButton(
-            onClick = onSend,
-            enabled = draft.isNotBlank() && !isSending
-        ) {
-            if (isSending) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = colors.accent
-                )
-            } else {
-                Text("发送")
+        if (replyTarget != null) {
+            ReplyPreviewStrip(target = replyTarget, onCancel = onCancelReply)
+            Spacer(Modifier.height(6.dp))
+        }
+        Row(verticalAlignment = Alignment.Bottom) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = onDraftChange,
+                placeholder = { Text("输入消息") },
+                maxLines = 4,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                onClick = onSend,
+                enabled = draft.isNotBlank() && !isSending
+            ) {
+                if (isSending) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = colors.accent
+                    )
+                } else {
+                    Text("发送")
+                }
             }
         }
     }
 }
 
+/**
+ * What the composer is answering.
+ *
+ * It sits directly above the input so the quote reads as part of the message being
+ * written, and it is removable without discarding the draft: cancelling a reply is a
+ * separate decision from clearing what was typed.
+ */
+@Composable
+private fun ReplyPreviewStrip(target: ReplyTarget, onCancel: () -> Unit) {
+    val colors = oxypeColors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.surfaceRaised, RoundedCornerShape(10.dp))
+            .padding(start = 0.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(REPLY_STRIP_BAR_HEIGHT)
+                .background(colors.accent, RoundedCornerShape(2.dp))
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 8.dp, end = 8.dp)
+        ) {
+            Text(
+                text = "回复 ${target.authorName}",
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (target.body.isNotBlank()) {
+                Text(
+                    text = target.body,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onCancel),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "✕",
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.textSecondary
+            )
+        }
+    }
+}
+
+private val REPLY_STRIP_BAR_HEIGHT = 34.dp
+
 @Composable
 private fun MessageActionsDialog(
     message: ChatMessage,
     canDelete: Boolean,
+    onReply: () -> Unit,
     onCopy: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
@@ -406,6 +502,10 @@ private fun MessageActionsDialog(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(16.dp))
+                DropdownMenuItem(
+                    text = { Text("回复") },
+                    onClick = onReply
+                )
                 DropdownMenuItem(
                     text = { Text("复制文本") },
                     onClick = onCopy

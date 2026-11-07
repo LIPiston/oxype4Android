@@ -28,11 +28,14 @@ import dev.oxype.client.ui.theme.oxypeColors
  *
  * Nothing is invented here — a missing body simply omits the second line rather than
  * drawing a blank one, so a partial snapshot never looks like a broken bubble.
+ *
+ * [onClick] is `null` when the original cannot be reached, which keeps the block a plain
+ * label instead of a target that swallows a tap and does nothing.
  */
 @Composable
 fun QuoteBlock(
     quote: QuoteView,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)?,
     modifier: Modifier = Modifier
 ) {
     val colors = oxypeColors
@@ -51,7 +54,9 @@ fun QuoteBlock(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = QUOTE_BAR_WIDTH + QUOTE_TEXT_GAP)
-                .clickable(onClick = onClick)
+                .then(
+                    if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+                )
         ) {
             Text(
                 text = quote.author,
