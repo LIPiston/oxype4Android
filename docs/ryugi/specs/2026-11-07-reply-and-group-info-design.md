@@ -444,6 +444,7 @@ data class GroupInfoUiState(
 | 类型 | 名称/ID | 路径或链接 | 决定了什么 |
 | --- | --- | --- | --- |
 | 画板 | `reply-and-group-info`（artifact id 见同目录 `.artifact-id`） | `.ryugi/artifacts/artboard/reply-and-group-info/`；链接 `http://localhost:27319/artboard/haMkeXd4Ffj6F0kQxFXAt` | 第一轮三个问题共 7 块稿 |
+| 验收画板 | `verify-reply-group-info` | `.ryugi/artifacts/artboard/verify-reply-group-info/`；链接 `http://localhost:27319/artboard/mhot9k3XfrIlftjEbh1Fv` | 模拟器实测截图：引用块、双击边界、群聊信息页、往返保留滚动位置 |
 | 画板页 | `q1-a` | `.../pages/design/q1-a.html` | **已选**：左侧竖条引用（3dp 竖条 + 名字 + 两行正文） |
 | 画板页 | `q2-b` | `.../pages/design/q2-b.html` | **已选**：长按菜单 + 左滑 + 双击右侧；输入框上方回复条 |
 | 画板页 | `q3-a` | `.../pages/design/q3-a.html` | **已选**：整页群聊信息（头像、名称、成员数、简介、成员角色、会话编号） |
