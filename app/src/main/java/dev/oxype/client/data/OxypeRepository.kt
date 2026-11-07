@@ -141,6 +141,15 @@ class OxypeRepository(
      */
     val profile: StateFlow<ProfileSnapshot?> = _profile.asStateFlow()
 
+    /**
+     * Bumped whenever an avatar upload or removal lands.
+     *
+     * A profile read that was already in flight when the change completed is older than
+     * the change, whatever order the answers arrive in. Publishing it would put the old
+     * picture back on screen, so such a read is discarded instead (see [loadProfile]).
+     */
+    private var profileRevision: Long = 0L
+
     /** Set when the stored token turned out to be dead, so the UI can explain why. */
     private val _sessionExpired = MutableStateFlow(false)
     val sessionExpired: StateFlow<Boolean> = _sessionExpired.asStateFlow()
@@ -383,8 +392,19 @@ class OxypeRepository(
         _sessionExpired.value = false
     }
 
+    /**
+     * Points the app at another server.
+     *
+     * Every cached answer belongs to the address it was read from: the same account id on
+     * another server is a different account, and an avatar URL resolved against the old
+     * origin would 404 or, worse, show someone else's picture. The profile cache is
+     * dropped here rather than filtered later, so no reader can be handed a snapshot that
+     * no longer belongs to the address on screen.
+     */
     fun updateBaseUrl(url: String) {
+        val before = http.baseUrl
         http.updateBaseUrl(url)
+        if (http.baseUrl != before) clearProfile()
         sessionStore.baseUrl = http.baseUrl
     }
 
@@ -534,6 +554,7 @@ class OxypeRepository(
     suspend fun loadProfile(): ProfileSnapshot {
         val owner = authOwner() ?: throw unauthorized()
         val identity = profileIdentity(owner)
+        val revision = profileRevision
         val profile = try {
             api.profile(owner.credentials)
         } catch (e: OxypeException) {
@@ -541,6 +562,12 @@ class OxypeRepository(
             throw e
         }
         if (!isCurrentAuth(owner) || profileIdentity(owner) != identity) throw unauthorized()
+        // An avatar change completed while this read was in flight: the answer describes
+        // a state the account has already left. The newer snapshot is what the page must
+        // show, so the stale answer is dropped rather than published.
+        if (revision != profileRevision) {
+            return _profile.value ?: profile.toSnapshot(identity)
+        }
         val snapshot = profile.toSnapshot(identity)
         _profile.value = snapshot
         return snapshot
@@ -563,6 +590,8 @@ class OxypeRepository(
         }
         if (!isCurrentAuth(owner) || profileIdentity(owner) != identity) throw unauthorized()
         val snapshot = profile.toSnapshot(identity)
+        // The change is newer than every read already in flight.
+        profileRevision++
         _profile.value = snapshot
         return snapshot
     }
@@ -579,18 +608,35 @@ class OxypeRepository(
         }
         if (!isCurrentAuth(owner) || profileIdentity(owner) != identity) throw unauthorized()
         val snapshot = profile.toSnapshot(identity)
+        // The change is newer than every read already in flight.
+        profileRevision++
         _profile.value = snapshot
         return snapshot
     }
 
     /** Drops the cached profile; called on sign-out and available to a deliberate refresh. */
     fun clearProfile() {
+        // Any read still in flight belongs to the identity being dropped, so its answer
+        // must not be published either.
+        profileRevision++
         _profile.value = null
     }
 
+    /** The identity [profile] currently belongs to, or `null` when nothing is cached. */
+    internal fun profileIdentityOrNull(): String? = _profile.value?.identity
+
+    /**
+     * The identity a profile would belong to right now: `generation|userId|baseUrl`.
+     *
+     * The view model keys its visible fields on this so a reused page cannot paint one
+     * login's name over another's. It is the same string [ProfileSnapshot.identity] carries,
+     * so a cache comparison and a published snapshot agree without exposing the format.
+     */
+    internal fun currentProfileIdentity(): String? =
+        authOwner()?.let { profileIdentity(it) }
+
     /**
      * What a profile snapshot belongs to: the login generation, the account, the server.
-     *
      * A user id alone is not an identity — the same id on another server is a different
      * person, and signing the same account in again issues a new token whose answers must
      * not be confused with the previous one's.

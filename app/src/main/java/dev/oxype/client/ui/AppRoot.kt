@@ -131,7 +131,6 @@ fun AppRoot(container: AppContainer) {
         // Section scroll positions are kept per tab, so switching to settings and back
         // does not jump the conversation list to the top.
         val sectionState = rememberSaveableStateHolder()
-        val retainedChatId = retainedChatSessionId(navigation.destination)
         if (navigation.restoring) {
             // A fresh process must not paint auth (or an empty chat) while the stored
             // token is still being verified: the placeholder holds the frame until the
@@ -145,7 +144,6 @@ fun AppRoot(container: AppContainer) {
             username = repository.storedUsername(),
             chatScreenState = chatScreenState,
             sectionState = sectionState,
-            retainedChatId = retainedChatId,
             authViewModel = authViewModel,
             homeViewModel = homeViewModel,
             chatViewModel = chatViewModel,
@@ -184,7 +182,6 @@ private fun DestinationHost(
     username: String?,
     chatScreenState: SaveableStateHolder,
     sectionState: SaveableStateHolder,
-    retainedChatId: Long,
     authViewModel: AuthViewModel,
     homeViewModel: HomeViewModel,
     chatViewModel: ChatViewModel,
@@ -270,6 +267,12 @@ private fun DestinationHost(
                         onOpenChat = { sessionId ->
                             val summary = homeViewModel.state.value.sessions
                                 .firstOrNull { it.sessionId == sessionId }
+                            // A conversation opened from the list always starts at the
+                            // newest message: whatever offset an earlier visit left
+                            // behind is dropped here, before the chat composes. The
+                            // group-info round trip never comes through this path, so it
+                            // keeps its position.
+                            chatScreenState.removeState(sessionId)
                             navigate(
                                 Destination.Chat(
                                     sessionId = sessionId,
@@ -320,7 +323,12 @@ private fun DestinationHost(
                         navigate(Destination.Chats)
                     }
                     BackHandler { leaveChat() }
-                    chatScreenState.SaveableStateProvider(retainedChatId) {
+                    // The key comes from the destination this branch was composed for, not
+                    // from the live navigation state: on the way out the two disagree, and
+                    // a key that followed the live state would be recreated mid-animation.
+                    chatScreenState.SaveableStateProvider(
+                        chatStateKeyFor(destination, current)
+                    ) {
                         ChatScreen(
                             viewModel = chatViewModel,
                             sessionId = destination.sessionId,

@@ -136,6 +136,24 @@ internal fun retainedChatSessionId(destination: Destination): Long = when (desti
 }
 
 /**
+ * The key a chat branch remembers its screen state under.
+ *
+ * The key belongs to the destination that branch was composed for. It must never be
+ * derived from where navigation has moved to, because `AnimatedContent` keeps composing
+ * the outgoing chat for the length of the exit animation while the app has already
+ * switched to the list: a key taken from the live destination would flip to `0`
+ * mid-animation, recreate the provider and restart the chat's `LaunchedEffect` under the
+ * screen that is on its way out.
+ *
+ * [live] is accepted only so the rule is testable: it is deliberately ignored.
+ */
+internal fun chatStateKeyFor(content: Destination, live: Destination): Long {
+    // The parameter exists to pin the contract; the key is the composed destination's.
+    live.hashCode()
+    return retainedChatSessionId(content)
+}
+
+/**
  * Persists [NavigationState] across configuration changes and process death.
  *
  * Without this a rotation re-executes the startup restore and would drop an open chat.

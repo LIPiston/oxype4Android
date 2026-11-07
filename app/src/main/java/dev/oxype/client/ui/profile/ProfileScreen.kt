@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.oxype.client.ui.components.BottomBarMetrics
 import dev.oxype.client.ui.components.SenderAvatar
 import dev.oxype.client.ui.theme.oxypeColors
 import kotlinx.coroutines.Dispatchers
@@ -109,7 +110,12 @@ fun ProfileScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = colors.appBackground,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.padding(bottom = BottomBarMetrics.SNACKBAR_LIFT)
+            )
+        },
         topBar = {
             TopAppBar(
                 title = { Text("个人资料") },
@@ -132,7 +138,7 @@ fun ProfileScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(bottom = 104.dp)
+                .padding(bottom = BottomBarMetrics.CONTENT_INSET)
         ) {
             ProfileHeader(
                 name = state.username,

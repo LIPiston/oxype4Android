@@ -36,6 +36,16 @@ data class ProfileUiState(
     val isLoading: Boolean = false,
     val isUploading: Boolean = false,
     val isRemoving: Boolean = false,
+    /**
+     * What the fields above belong to: `generation|userId|baseUrl`.
+     *
+     * The view model outlives the page, so the same instance serves account A, then B, then
+     * A again on another server. Without this key the previous visitor's name and picture
+     * stay in the state across [close] and are painted by the next open's loading frame —
+     * which is exactly the leak a page about "who am I" cannot have. `null` means "nothing
+     * shown yet".
+     */
+    val identity: String? = null,
     /** The address the profile was read from; shown on the page and used by "服务器" card. */
     val serverUrl: String = "",
     /** A one-shot result for the snackbar; the screen clears it after showing it. */
@@ -50,17 +60,25 @@ data class ProfileUiState(
  * Three guards keep a late answer from painting the wrong page:
  *
  * - the repository already refuses to publish for a login/server that moved on;
- * - [generation] is bumped on every [open] and [close], so an upload started on one visit
- *   cannot land on the next one;
- * - a 401 has already moved the app to the sign-in screen, so no error text is painted
- *   over a page that is about to disappear.
+ * - [generation] is bumped on every [open], [close] and avatar mutation, so an upload
+ *   started on one visit cannot land on the next one;
+ * - [identity] names the login/server the fields belong to, and the state is emptied as
+ *   soon as that changes, so a reused view model cannot paint A's name over B's page.
+ *
+ * A 401 has already moved the app to the sign-in screen, so no error text is painted
+ * over a page that is about to disappear.
  */
 class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfileUiState(serverUrl = repository.baseUrl()))
     val state: StateFlow<ProfileUiState> = _state.asStateFlow()
 
-    /** Bumped on every [open] and [close]; answers from an older visit are dropped. */
+    /**
+     * Bumped on every [open], [close] and completed avatar mutation.
+     *
+     * A load only writes its answer while its own generation is still current, which is
+     * what stops a read issued before an upload from repainting the old picture after it.
+     */
     private var generation: Long = 0L
     private var loading: Job? = null
     private var action: Job? = null
@@ -73,12 +91,19 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
      * the picture should not flash away just because the device was turned.
      */
     fun open() {
+        // The page may be reused across accounts or servers. Fields that belong to a
+        // different identity are dropped *before* the loading frame is drawn, so the new
+        // visit never starts by showing the previous one's name and picture.
+        val identity = repository.currentProfileIdentity()
+        if (identity != _state.value.identity) resetFields()
         applyCachedProfile()
         refresh()
-    }    /** Re-reads the profile without hiding what is already on screen. */
+    }
+
+    /** Re-reads the profile without hiding what is already on screen. */
     fun refresh() {
         if (_state.value.isLoading) return
-        val generation = ++this.generation
+        val generation = this.generation
         _state.value = _state.value.copy(
             isLoading = true,
             error = null,
@@ -127,11 +152,14 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
             _state.value = _state.value.copy(message = rejection)
             return
         }
-        val generation = this.generation
         val owner: AuthOwner = repository.authOwner() ?: run {
             _state.value = _state.value.copy(message = "请先登录")
             return
         }
+        // Starting a change invalidates any read already in flight: its answer was taken
+        // before the picture changed, so it may not paint over the result.
+        val generation = ++this.generation
+        loading?.cancel()
         _state.value = _state.value.copy(isUploading = true)
         action?.cancel()
         action = viewModelScope.launch {
@@ -139,6 +167,8 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
                 val encoded = Base64.encode(bytes)
                 val profile = repository.uploadAvatar(encoded)
                 if (!isCurrent(generation)) return@launch
+                // And the change is now newer than every read that started meanwhile.
+                this@ProfileViewModel.generation++
                 _state.value = _state.value.copy(
                     isUploading = false,
                     message = "头像已更新"
@@ -159,17 +189,20 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
     fun removeAvatar() {
         if (_state.value.isRemoving || _state.value.isUploading) return
         if (!_state.value.hasAvatar) return
-        val generation = this.generation
         val owner: AuthOwner = repository.authOwner() ?: run {
             _state.value = _state.value.copy(message = "请先登录")
             return
         }
+        // Same ordering rule as an upload: a read taken before the removal is stale.
+        val generation = ++this.generation
+        loading?.cancel()
         _state.value = _state.value.copy(isRemoving = true)
         action?.cancel()
         action = viewModelScope.launch {
             try {
                 val profile = repository.removeAvatar()
                 if (!isCurrent(generation)) return@launch
+                this@ProfileViewModel.generation++
                 _state.value = _state.value.copy(
                     isRemoving = false,
                     message = "头像已移除"
@@ -206,10 +239,33 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
         _state.value = _state.value.copy(error = null)
     }
 
-    /** Shows whatever the repository already knows while a refresh is in flight. */
+    /**
+     * Shows whatever the repository already knows while a refresh is in flight.
+     *
+     * The repository drops a snapshot when the login or the server changes, but the cache
+     * is still checked against the identity on screen: a reused page must never draw a
+     * name or a picture that belongs to another login, even for one frame.
+     */
     private fun applyCachedProfile() {
         val cached = repository.profile.value ?: return
+        if (cached.identity != repository.currentProfileIdentity()) return
         _state.value = _state.value.withProfile(cached)
+    }
+
+    /**
+     * Empties every field that describes the account, keeping only the page's own flags.
+     *
+     * A view model outlives its page: the same instance serves account A and then B. The
+     * fields must be cleared the moment the identity they belong to changes, or B's first
+     * (loading or failed) frame shows A's name and picture.
+     */
+    private fun resetFields() {
+        val current = _state.value
+        _state.value = ProfileUiState(
+            isLoading = current.isLoading,
+            serverUrl = repository.baseUrl(),
+            identity = repository.currentProfileIdentity()
+        )
     }
 
     private fun isCurrent(generation: Long): Boolean = generation == this.generation
@@ -221,7 +277,8 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
         hasAvatar = profile.hasAvatar,
         maxBytes = profile.maxBytes,
         maxEdge = profile.maxEdge,
-        formats = profile.formats
+        formats = profile.formats,
+        identity = repository.currentProfileIdentity()
     )
 
     /**

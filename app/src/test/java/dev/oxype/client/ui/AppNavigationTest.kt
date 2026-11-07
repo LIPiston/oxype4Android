@@ -255,6 +255,34 @@ class AppNavigationTest {
         assertEquals("a different conversation is a different key", 7L, otherChat)
     }
 
+    @Test
+    fun `an exiting chat keeps its own key while navigation has already moved`() {
+        // `AnimatedContent` keeps composing the outgoing chat during the exit animation,
+        // after `navigation` has already switched to the list. The key must not follow
+        // that switch: doing so recreates the provider and restarts the chat's effect
+        // under a screen that is disappearing.
+        val chat = Destination.Chat(42L, "周末徒步小队", "5 位成员")
+
+        assertEquals(
+            "the key belongs to the branch being composed",
+            42L,
+            chatStateKeyFor(content = chat, live = Destination.Chats)
+        )
+        assertEquals(
+            "and it stays put when the live destination is another section",
+            42L,
+            chatStateKeyFor(content = chat, live = Destination.Profile)
+        )
+        assertEquals(
+            "the group info round trip keeps the same key on both sides",
+            chatStateKeyFor(content = chat, live = Destination.GroupInfo(42L, "周末徒步小队", "5 位成员")),
+            chatStateKeyFor(
+                content = Destination.GroupInfo(42L, "周末徒步小队", "5 位成员"),
+                live = chat
+            )
+        )
+    }
+
     // ---- top-level tabs ---------------------------------------------------------
 
     @Test

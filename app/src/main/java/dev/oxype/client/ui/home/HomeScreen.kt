@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.oxype.client.ui.components.BottomBarMetrics
 import dev.oxype.client.ui.components.SessionRow
 import dev.oxype.client.ui.theme.oxypeColors
 
@@ -85,7 +86,14 @@ fun HomeScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = colors.appBackground,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        // Lifted clear of the floating bar: the Scaffold's own bottom inset stops at the
+        // system navigation area, and the bar is drawn over that.
+        snackbarHost = {
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.padding(bottom = BottomBarMetrics.SNACKBAR_LIFT)
+            )
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -146,7 +154,7 @@ fun HomeScreen(
                         )
                         HorizontalDivider(color = colors.divider)
                     }
-                    item { Spacer(Modifier.height(92.dp)) }
+                    item { Spacer(Modifier.height(BottomBarMetrics.CONTENT_INSET)) }
                 }
             }
         }

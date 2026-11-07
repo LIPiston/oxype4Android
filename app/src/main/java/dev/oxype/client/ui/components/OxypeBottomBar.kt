@@ -51,11 +51,14 @@ import dev.oxype.client.ui.BottomTab
 import dev.oxype.client.ui.theme.oxypeColors
 
 /**
- * The selection capsule's horizontal offset, in units of its own width.
+ * The selection capsule's horizontal offset, counted in **slots**.
  *
- * One slot per tab and one capsule per slot, so tab `n` of `count` sits `n` capsule-widths
- * to the right. A negative index (a detail screen, where the bar is hidden) or a bar with
- * no slots keeps it at the left edge rather than letting it fly off.
+ * One slot per tab, so tab `n` of `count` sits `n` slots to the right. Counted in slots
+ * and not in capsule widths on purpose: the capsule is inset from its slot by 6dp on each
+ * side, and advancing it by its own narrower width leaves a growing gap to the left of the
+ * selected item (12dp on the middle tab, 24dp on the last). A negative index (a detail
+ * screen, where the bar is hidden) or a bar with no slots keeps it at the left edge rather
+ * than letting it fly off.
  */
 internal fun bottomBarFraction(index: Int, count: Int): Float = when {
     count <= 0 -> 0f
@@ -63,6 +66,16 @@ internal fun bottomBarFraction(index: Int, count: Int): Float = when {
     index >= count -> (count - 1).toFloat()
     else -> index.toFloat()
 }
+
+/**
+ * The same offset, named for what it is where the bar is drawn.
+ *
+ * `BoxWithConstraints` multiplies it by the measured slot width; keeping the name
+ * separate from [bottomBarFraction] means the composable cannot accidentally multiply by
+ * the capsule width instead.
+ */
+internal fun selectionCapsuleOffsetInSlots(index: Int, count: Int): Float =
+    bottomBarFraction(index, count)
 
 /**
  * The floating capsule bar for the three top-level sections.
@@ -88,8 +101,9 @@ internal fun OxypeBottomBar(
 
     // Slot units, not pixels: the pill is placed from the measured bar width, so a
     // rotation or a split-screen resize re-places it instead of leaving it stranded.
-    // `bottomBarFraction` keeps an unknown tab (a detail screen) from aiming off the bar.
-    val targetSlot = bottomBarFraction(selectedIndex, tabs.size)
+    // `selectionCapsuleOffsetInSlots` keeps an unknown tab (a detail screen) from aiming
+    // off the bar.
+    val targetSlot = selectionCapsuleOffsetInSlots(selectedIndex, tabs.size)
     val pillSlot = remember { Animatable(targetSlot) }
     LaunchedEffect(targetSlot) {
         pillSlot.animateTo(
@@ -102,12 +116,15 @@ internal fun OxypeBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(
+                horizontal = 12.dp,
+                vertical = BottomBarMetrics.BAR_PADDING
+            )
     ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(64.dp)
+                .height(BottomBarMetrics.BAR_HEIGHT)
                 .shadow(elevation = 12.dp, shape = shape, clip = false)
                 .clip(shape)
                 .background(colors.surface)
@@ -117,7 +134,10 @@ internal fun OxypeBottomBar(
             Box(
                 modifier = Modifier
                     .padding(horizontal = 6.dp, vertical = 6.dp)
-                    .offset(x = (slotWidth - 12.dp) * pillSlot.value)
+                    // One *slot* per tab, not one capsule width: the capsule is inset
+                    // from its slot, so advancing it by its own width would leave it a
+                    // growing gap to the left of the selected item.
+                    .offset(x = slotWidth * pillSlot.value)
                     .width(slotWidth - 12.dp)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(16.dp))

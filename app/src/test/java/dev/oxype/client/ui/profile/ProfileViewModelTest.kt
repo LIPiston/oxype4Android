@@ -319,4 +319,196 @@ class ProfileViewModelTest {
 
         assertNull(viewModel.state.value.message)
     }
+
+    @Test
+    fun `a second account never sees the first one's fields while its own load is slow`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val transport = ScriptedTransport { _, route ->
+            when {
+                route == "/getUser/1" -> HttpResponse(
+                    200,
+                    """{"data":{"id":1,"username":"alice","avatarUrl":"/avatar/u1-77802f6e.png"}}"""
+                )
+
+                route == "/getAvatar/1" -> HttpResponse(200, """{"data":{"hasAvatar":true}}""")
+                route == "/getUser/2" -> {
+                    gate.await()
+                    HttpResponse(
+                        200,
+                        """{"data":{"id":2,"username":"bob","avatarUrl":"/avatar/u2-bbbbbbbb.png"}}"""
+                    )
+                }
+
+                route == "/getAvatar/2" -> HttpResponse(200, """{"data":{"hasAvatar":true}}""")
+                route.startsWith("/login/") ->
+                    HttpResponse(200, """{"data":{"token":"tok"}}""")
+
+                else -> null
+            }
+        }
+        val repository = repositoryWith(signedIn(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ProfileViewModel(repository)
+        viewModel.open()
+        testScheduler.runCurrent()
+        assertEquals("alice", viewModel.state.value.username)
+
+        // The page left composition for the sign-out, and the same view model instance is
+        // reused for the next account.
+        viewModel.close()
+        repository.logout()
+        repository.login(2L, "secret2")
+        viewModel.open()
+        testScheduler.runCurrent()
+
+        val loading = viewModel.state.value
+        assertTrue(loading.isLoading)
+        assertNull("A's name must not survive into B's page", loading.username)
+        assertNull("A's picture must not survive either", loading.avatarUrl)
+        assertEquals(
+            "the upload limits fall back to the defaults rather than A's server's",
+            3145728L,
+            loading.maxBytes
+        )
+
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals("bob", viewModel.state.value.username)
+        assertTrue(viewModel.state.value.avatarUrl.orEmpty().endsWith("/avatar/u2-bbbbbbbb.png"))
+    }
+
+    @Test
+    fun `changing the server never shows the old address's picture`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var gateReads = false
+        val transport = ScriptedTransport { _, route ->
+            when {
+                route == "/getUser/1" -> {
+                    if (gateReads) gate.await()
+                    HttpResponse(
+                        200,
+                        """{"data":{"id":1,"username":"alice","avatarUrl":"/avatar/u1-77802f6e.png"}}"""
+                    )
+                }
+
+                route == "/getAvatar/1" -> HttpResponse(
+                    200,
+                    """{"data":{"avatarUrl":"/avatar/u1-77802f6e.png","hasAvatar":true}}"""
+                )
+
+                else -> null
+            }
+        }
+        val repository = repositoryWith(signedIn(), transport, backgroundScope)
+        repository.login(1L, "secret1")
+        val viewModel = ProfileViewModel(repository)
+        viewModel.open()
+        testScheduler.runCurrent()
+        assertEquals(
+            "http://example.test:12345/avatar/u1-77802f6e.png",
+            viewModel.state.value.avatarUrl
+        )
+
+        viewModel.close()
+        gateReads = true
+        repository.updateBaseUrl("http://other.test:9999")
+        viewModel.open()
+        testScheduler.runCurrent()
+
+        assertNull(
+            "a picture resolved against the old origin must not be drawn on the new server",
+            viewModel.state.value.avatarUrl
+        )
+
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "the new answer is resolved against the new address",
+            "http://other.test:9999/avatar/u1-77802f6e.png",
+            viewModel.state.value.avatarUrl
+        )
+    }
+
+    @Test
+    fun `a refresh during an upload does not leave the upload buttons stuck`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val repository = repositoryWith(
+            signedIn(),
+            transport(
+                upload = {
+                    gate.await()
+                    HttpResponse(200, """{"data":{"avatarUrl":"/avatar/u1-deadbeef.png","hasAvatar":true}}""")
+                }
+            ),
+            backgroundScope
+        )
+        repository.login(1L, "secret1")
+        val viewModel = ProfileViewModel(repository)
+        viewModel.open()
+        testScheduler.runCurrent()
+
+        viewModel.setAvatar(validPng)
+        testScheduler.runCurrent()
+        assertTrue(viewModel.state.value.isUploading)
+
+        // The refresh button stays enabled during a mutation; bumping the load generation
+        // must not orphan the upload's own completion.
+        viewModel.refresh()
+        testScheduler.runCurrent()
+
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+
+        val state = viewModel.state.value
+        assertFalse("the spinner must come down", state.isUploading)
+        assertFalse("and the remove button must be usable again", state.isRemoving)
+        assertEquals("头像已更新", state.message)
+        assertTrue(state.avatarUrl.orEmpty().endsWith("/avatar/u1-deadbeef.png"))
+    }
+
+    @Test
+    fun `an older read cannot overwrite an avatar change that already landed`() = runTest {
+        val readGate = CompletableDeferred<Unit>()
+        val repository = repositoryWith(
+            signedIn(),
+            transport(
+                user = {
+                    readGate.await()
+                    HttpResponse(
+                        200,
+                        """{"data":{"id":1,"username":"alice","avatarUrl":"/avatar/u1-77802f6e.png"}}"""
+                    )
+                }
+            ),
+            backgroundScope
+        )
+        repository.login(1L, "secret1")
+        val viewModel = ProfileViewModel(repository)
+        viewModel.open()
+        testScheduler.runCurrent()
+
+        viewModel.setAvatar(validPng)
+        testScheduler.runCurrent()
+        assertEquals(
+            "the upload landed first",
+            "http://example.test:12345/avatar/u1-deadbeef.png",
+            viewModel.state.value.avatarUrl
+        )
+
+        readGate.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(
+            "the delayed read was taken before the change and must not undo it",
+            "http://example.test:12345/avatar/u1-deadbeef.png",
+            viewModel.state.value.avatarUrl
+        )
+        assertEquals(
+            "and the repository keeps the newer answer too",
+            "http://example.test:12345/avatar/u1-deadbeef.png",
+            repository.profile.value?.avatarUrl
+        )
+    }
 }

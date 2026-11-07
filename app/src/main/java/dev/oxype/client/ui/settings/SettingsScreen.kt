@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.oxype.client.BuildConfig
 import dev.oxype.client.data.session.ThemeMode
+import dev.oxype.client.ui.components.BottomBarMetrics
 import dev.oxype.client.ui.components.SenderAvatar
 import dev.oxype.client.ui.theme.oxypeColors
 
@@ -83,7 +84,12 @@ fun SettingsScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = colors.appBackground,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = {
+            SnackbarHost(
+                snackbarHostState,
+                modifier = Modifier.padding(bottom = BottomBarMetrics.SNACKBAR_LIFT)
+            )
+        },
         topBar = {
             TopAppBar(
                 title = { Text("设置") },
@@ -100,7 +106,7 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(bottom = 104.dp)
+                .padding(bottom = BottomBarMetrics.CONTENT_INSET)
         ) {
             SectionHeader("账户")
             Row(
