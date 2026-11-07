@@ -9,6 +9,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import dev.oxype.client.data.session.ThemeMode
 
 /**
  * Colours that Material's scheme does not name: the chat surface, the two bubble
@@ -31,7 +32,7 @@ data class OxypeColors(
     val danger: Color
 )
 
-private val LightColors = OxypeColors(
+internal val LightOxypeColors = OxypeColors(
     appBackground = Color(0xFFF4F6F5),
     surface = Color(0xFFFFFFFF),
     surfaceRaised = Color(0xFFEDF1EF),
@@ -46,7 +47,7 @@ private val LightColors = OxypeColors(
     danger = Color(0xFFA83B33)
 )
 
-private val DarkColors = OxypeColors(
+internal val DarkOxypeColors = OxypeColors(
     appBackground = Color(0xFF111614),
     surface = Color(0xFF191F1C),
     surfaceRaised = Color(0xFF212925),
@@ -62,44 +63,71 @@ private val DarkColors = OxypeColors(
 )
 
 private val LightScheme: ColorScheme = lightColorScheme(
-    primary = LightColors.accent,
+    primary = LightOxypeColors.accent,
     onPrimary = Color.White,
-    secondary = LightColors.accent,
-    background = LightColors.appBackground,
-    onBackground = LightColors.textPrimary,
-    surface = LightColors.surface,
-    onSurface = LightColors.textPrimary,
-    surfaceVariant = LightColors.surfaceRaised,
-    onSurfaceVariant = LightColors.textSecondary,
-    outline = LightColors.divider,
-    error = LightColors.danger
+    secondary = LightOxypeColors.accent,
+    background = LightOxypeColors.appBackground,
+    onBackground = LightOxypeColors.textPrimary,
+    surface = LightOxypeColors.surface,
+    onSurface = LightOxypeColors.textPrimary,
+    surfaceVariant = LightOxypeColors.surfaceRaised,
+    onSurfaceVariant = LightOxypeColors.textSecondary,
+    outline = LightOxypeColors.divider,
+    error = LightOxypeColors.danger
 )
 
 private val DarkScheme: ColorScheme = darkColorScheme(
-    primary = DarkColors.accent,
+    primary = DarkOxypeColors.accent,
     onPrimary = Color(0xFF10231A),
-    secondary = DarkColors.accent,
-    background = DarkColors.appBackground,
-    onBackground = DarkColors.textPrimary,
-    surface = DarkColors.surface,
-    onSurface = DarkColors.textPrimary,
-    surfaceVariant = DarkColors.surfaceRaised,
-    onSurfaceVariant = DarkColors.textSecondary,
-    outline = DarkColors.divider,
-    error = DarkColors.danger
+    secondary = DarkOxypeColors.accent,
+    background = DarkOxypeColors.appBackground,
+    onBackground = DarkOxypeColors.textPrimary,
+    surface = DarkOxypeColors.surface,
+    onSurface = DarkOxypeColors.textPrimary,
+    surfaceVariant = DarkOxypeColors.surfaceRaised,
+    onSurfaceVariant = DarkOxypeColors.textSecondary,
+    outline = DarkOxypeColors.divider,
+    error = DarkOxypeColors.danger
 )
 
-val LocalOxypeColors = staticCompositionLocalOf { LightColors }
+val LocalOxypeColors = staticCompositionLocalOf { LightOxypeColors }
 
 @Composable
 fun OxypeTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
-    val colors = if (darkTheme) DarkColors else LightColors
+    val colors = if (darkTheme) DarkOxypeColors else LightOxypeColors
     CompositionLocalProvider(LocalOxypeColors provides colors) {
         MaterialTheme(
             colorScheme = if (darkTheme) DarkScheme else LightScheme,
             content = content
         )
     }
+}
+
+/**
+ * The single rule mapping the stored [ThemeMode] preference to a boolean theme.
+ *
+ * `LIGHT`/`DARK` are the user's explicit choice and win over the system; `SYSTEM`
+ * follows the platform. Both the composition and the window background consult this,
+ * so they can never disagree about which theme is showing.
+ */
+internal fun resolveDarkTheme(mode: ThemeMode, systemInDark: Boolean): Boolean = when (mode) {
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+    ThemeMode.SYSTEM -> systemInDark
+}
+
+/**
+ * The opaque colour painted behind the animated destination.
+ *
+ * Every screen transition cross-fades, so mid-transition the composited frame is less
+ * than opaque. Whatever is painted underneath shows through at that moment: it must be
+ * this theme's own app background, or a dark theme blends through the light window
+ * background and the screen flashes white. Opaque by construction, since it is a solid
+ * palette token.
+ */
+internal fun appFrameColor(darkTheme: Boolean): Color {
+    val colors = if (darkTheme) DarkOxypeColors else LightOxypeColors
+    return colors.appBackground
 }
 
 /** Shorthand for the non-Material tokens. */

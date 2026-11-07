@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,7 +32,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.oxype.client.data.AuthRestoreState
 import dev.oxype.client.data.OxypeRepository
-import dev.oxype.client.data.session.ThemeMode
 import dev.oxype.client.ui.auth.AuthScreen
 import dev.oxype.client.ui.auth.AuthViewModel
 import dev.oxype.client.ui.chat.ChatScreen
@@ -47,6 +47,7 @@ import dev.oxype.client.ui.settings.SettingsScreen
 import dev.oxype.client.ui.settings.SettingsViewModel
 import dev.oxype.client.ui.theme.OxypeTheme
 import dev.oxype.client.ui.theme.oxypeColors
+import dev.oxype.client.ui.theme.resolveDarkTheme
 
 /**
  * The single navigation point for the app.
@@ -112,11 +113,7 @@ fun AppRoot(container: AppContainer) {
         container.themeMode.collect { themeMode = it }
     }
 
-    val darkTheme = when (themeMode) {
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-    }
+    val darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme())
 
     val navigate: (Destination) -> Unit = { destination ->
         navigation = navigation.copy(destination = destination)
@@ -200,7 +197,11 @@ private fun DestinationHost(
     LaunchedEffect(selectedTab) {
         if (selectedTab != null) lastTab = selectedTab
     }
-    Box(modifier = Modifier.fillMaxSize()) {
+    // Every transition below cross-fades, so mid-transition the composited frame is less
+    // than opaque. Without a themed backdrop the activity window (painted from
+    // `windowBackground`, which is light) shows through and the screen flashes white.
+    // Painting the theme background here makes every transition blend theme into theme.
+    Box(modifier = Modifier.fillMaxSize().background(oxypeColors.appBackground)) {
         AnimatedContent(
             targetState = current,
             transitionSpec = {
