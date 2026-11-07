@@ -31,6 +31,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -63,6 +66,7 @@ import dev.oxype.client.ui.components.DayDivider
 import dev.oxype.client.ui.components.MessageBubble
 import dev.oxype.client.ui.theme.oxypeColors
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
@@ -89,11 +93,46 @@ fun ChatScreen(
     val colors = oxypeColors
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var confirmDelete by remember { mutableStateOf<ChatMessage?>(null) }
     // Quote bodies fall back to the loaded message when the server snapshot is partial,
     // so the index is built once per transcript rather than once per bubble.
     val loadedMessages = remember(state.messages) { state.messages.associateBy { it.id } }
+    val listItems = remember(state.messages) { chatListItems(state.messages.asReversed()) }
+    var flashMessageId by remember { mutableStateOf<Long?>(null) }
+
+    // The highlight is a one-shot answer to "where did it go"; it must not stay lit.
+    LaunchedEffect(flashMessageId) {
+        val id = flashMessageId ?: return@LaunchedEffect
+        delay(FLASH_DURATION_MILLIS)
+        if (flashMessageId == id) flashMessageId = null
+    }
+
+    /**
+     * Scrolls to the quoted message.
+     *
+     * Only the loaded window is searched: sequence ids have holes and there is no route
+     * to fetch a single message by id, so an unloaded target is reported instead of
+     * guessed at.
+     */
+    val jumpToMessage: (Long) -> Unit = { targetId ->
+        val index = lazyIndexForMessage(listItems, targetId)
+        if (index == null) {
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    message = "原消息不在当前已加载的消息里",
+                    duration = SnackbarDuration.Short
+                )
+            }
+        } else {
+            scope.launch {
+                listState.animateScrollToItem(index)
+                flashMessageId = targetId
+            }
+        }
+    }
 
     LaunchedEffect(sessionId) {
         viewModel.open(sessionId, title, subtitle)
@@ -131,6 +170,7 @@ fun ChatScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = colors.appBackground,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 navigationIcon = {
@@ -204,31 +244,40 @@ fun ChatScreen(
                             // its day's oldest message so the label paints above them.
                             item(key = "bottom-spacer") { Spacer(Modifier.height(8.dp)) }
                             items(
-                                items = chatListItems(state.messages.asReversed()),
+                                items = listItems,
                                 key = { it.key }
                             ) { row ->
                                 when (row) {
-                                    is ChatListItem.Message -> MessageBubbleWithActions(
-                                        message = row.message,
-                                        isOutgoing = row.message.senderId == state.currentUserId,
-                                        isGroup = state.isGroup,
-                                        senderLabel = if (row.message.senderId == state.currentUserId) {
-                                            null
-                                        } else {
-                                            senderDisplayName(row.message.senderId, state.participants)
-                                        },
-                                        senderAvatarUrl = state.participants[row.message.senderId]?.avatarUrl,
-                                        quote = row.message.reply?.let { quote ->
+                                    is ChatListItem.Message -> {
+                                        val quote = row.message.reply?.let { reply ->
                                             resolveQuote(
-                                                quote = quote,
+                                                quote = reply,
                                                 participants = state.participants,
                                                 loaded = loadedMessages,
                                                 currentUserId = state.currentUserId
                                             )
-                                        },
-                                        onReply = { viewModel.beginReply(row.message) },
-                                        onLongPress = { actionTarget = row.message }
-                                    )
+                                        }
+                                        MessageBubbleWithActions(
+                                            message = row.message,
+                                            isOutgoing = row.message.senderId == state.currentUserId,
+                                            isGroup = state.isGroup,
+                                            senderLabel = if (row.message.senderId == state.currentUserId) {
+                                                null
+                                            } else {
+                                                senderDisplayName(row.message.senderId, state.participants)
+                                            },
+                                            senderAvatarUrl = state.participants[row.message.senderId]?.avatarUrl,
+                                            quote = quote,
+                                            isFlashing = flashMessageId == row.message.id,
+                                            onReply = { viewModel.beginReply(row.message) },
+                                            // Even an unloaded target is tappable: the tap is
+                                            // how the user learns it cannot be reached.
+                                            onQuoteClick = quote?.let {
+                                                { jumpToMessage(it.targetMessageId) }
+                                            },
+                                            onLongPress = { actionTarget = row.message }
+                                        )
+                                    }
 
                                     is ChatListItem.Day -> DayDivider(label = row.label)
                                 }
@@ -316,6 +365,7 @@ private fun MessageBubbleWithActions(
     senderLabel: String?,
     senderAvatarUrl: String?,
     quote: QuoteView?,
+    isFlashing: Boolean,
     onReply: () -> Unit,
     onLongPress: () -> Unit,
     onQuoteClick: (() -> Unit)? = null
@@ -393,7 +443,8 @@ private fun MessageBubbleWithActions(
                 senderAvatarUrl = senderAvatarUrl,
                 showAvatar = isGroup,
                 quote = quote,
-                onQuoteClick = onQuoteClick
+                onQuoteClick = onQuoteClick,
+                isFlashing = isFlashing
             )
         }
     }
@@ -401,6 +452,9 @@ private fun MessageBubbleWithActions(
 
 private val REPLY_SWIPE_THRESHOLD_DP = 64f
 private val REPLY_SWIPE_MAX_OFFSET_DP = 72f
+
+/** How long a jumped-to bubble stays highlighted before the highlight clears itself. */
+private const val FLASH_DURATION_MILLIS = 1_200L
 
 @Composable
 private fun HistoryFooter(isLoadingOlder: Boolean, reachedTop: Boolean) {

@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,10 +49,20 @@ fun MessageBubble(
     showAvatar: Boolean = false,
     quote: QuoteView? = null,
     onQuoteClick: (() -> Unit)? = null,
+    isFlashing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val colors = oxypeColors
     val hasAvatarColumn = showAvatar && !isOutgoing
+    val baseColor = if (isOutgoing) colors.outgoingBubble else colors.incomingBubble
+    // Jumping to a quote must show *which* bubble was meant; the highlight fades back on
+    // its own once the screen clears the target, so no second tap is needed to undo it.
+    val flashColor = androidx.compose.ui.graphics.lerp(baseColor, colors.accent, FLASH_BLEND)
+    val bubbleColor by androidx.compose.animation.animateColorAsState(
+        targetValue = if (isFlashing) flashColor else baseColor,
+        animationSpec = androidx.compose.animation.core.tween(FLASH_FADE_MILLIS),
+        label = "bubble-flash"
+    )
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
@@ -83,7 +94,7 @@ fun MessageBubble(
                 Spacer(Modifier.width(AVATAR_GAP))
             }
             Surface(
-                color = if (isOutgoing) colors.outgoingBubble else colors.incomingBubble,
+                color = bubbleColor,
                 contentColor = if (isOutgoing) colors.outgoingText else colors.incomingText,
                 shape = RoundedCornerShape(
                     topStart = 14.dp,
@@ -152,6 +163,10 @@ private fun MessageMetadata(
 
 private val AVATAR_SIZE = 28.dp
 private val AVATAR_GAP = 8.dp
+
+/** How much accent is mixed into the bubble while it is highlighted. */
+private const val FLASH_BLEND = 0.18f
+private const val FLASH_FADE_MILLIS = 220
 
 /** Local wall-clock time; 0 renders as a dash rather than 1970. */
 fun formatTime(timestampMillis: Long): String {

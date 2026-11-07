@@ -59,6 +59,22 @@ internal fun chatListItems(newestFirst: List<ChatMessage>): List<ChatListItem> {
     return items
 }
 
+/**
+ * The `LazyColumn` index of [messageId], or `null` when it is not in [items].
+ *
+ * The list is reversed and starts with a bottom spacer, so the row index is the item
+ * index plus one. `null` is not an error: a quote may point at a message that has since
+ * been deleted or that sits outside the loaded window, and the screen tells the user so
+ * instead of scrolling somewhere arbitrary.
+ */
+internal fun lazyIndexForMessage(items: List<ChatListItem>, messageId: Long): Int? {
+    val index = items.indexOfFirst { it is ChatListItem.Message && it.message.id == messageId }
+    return if (index < 0) null else index + BOTTOM_SPACER_ROWS
+}
+
+/** The list emits one spacer row before the rows from [chatListItems]. */
+private const val BOTTOM_SPACER_ROWS = 1
+
 /** Calendar day key used to decide where a divider belongs. */
 internal fun dayKey(timestampMillis: Long): String {
     if (timestampMillis <= 0L) return "unknown"

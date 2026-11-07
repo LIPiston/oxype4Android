@@ -80,4 +80,46 @@ class ChatListLayoutTest {
     fun `empty transcript yields no items`() {
         assertTrue(chatListItems(emptyList()).isEmpty())
     }
+
+    @Test
+    fun `a loaded message resolves to its lazy index including the bottom spacer`() {
+        val items = chatListItems(
+            newestFirst = listOf(
+                message(2, day(2024, Calendar.MARCH, 2, 9)),
+                message(1, day(2024, Calendar.MARCH, 1, 9))
+            )
+        )
+
+        // Row 0 is the bottom spacer; then M2, D, M1, D.
+        assertEquals(1, lazyIndexForMessage(items, 2L))
+        assertEquals(3, lazyIndexForMessage(items, 1L))
+    }
+
+    @Test
+    fun `a message in the same day run as the divider still resolves`() {
+        val items = chatListItems(
+            newestFirst = listOf(
+                message(3, day(2024, Calendar.MARCH, 2, 20)),
+                message(2, day(2024, Calendar.MARCH, 2, 18)),
+                message(1, day(2024, Calendar.MARCH, 1, 9))
+            )
+        )
+
+        // M3, M2, D, M1, D
+        assertEquals(1, lazyIndexForMessage(items, 3L))
+        assertEquals(2, lazyIndexForMessage(items, 2L))
+        assertEquals(4, lazyIndexForMessage(items, 1L))
+    }
+
+    @Test
+    fun `a message outside the loaded window has no index`() {
+        val items = chatListItems(newestFirst = listOf(message(2, day(2024, Calendar.MARCH, 2, 9))))
+
+        assertEquals(null, lazyIndexForMessage(items, 99L))
+    }
+
+    @Test
+    fun `an empty transcript has no index`() {
+        assertEquals(null, lazyIndexForMessage(emptyList(), 1L))
+    }
 }
