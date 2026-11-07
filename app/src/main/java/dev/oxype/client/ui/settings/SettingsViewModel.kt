@@ -15,6 +15,7 @@ data class SettingsUiState(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val userId: Long? = null,
     val username: String? = null,
+    val avatarUrl: String? = null,
     val isBusy: Boolean = false,
     val message: String? = null,
     val signedOut: Boolean = false
@@ -81,7 +82,10 @@ class SettingsViewModel(
     private fun SettingsUiState.withRepositoryValues(): SettingsUiState = copy(
         serverUrl = if (serverUrlEdited) serverUrl else repository.baseUrl(),
         userId = repository.currentUserId(),
-        username = repository.storedUsername()
+        username = repository.storedUsername(),
+        // Whatever the profile page last read. The settings row is a shortcut to that
+        // page, so it shows the same picture instead of loading a second copy.
+        avatarUrl = repository.profile.value?.avatarUrl
     )
 
     fun updateServerUrl(value: String) {

@@ -18,7 +18,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -56,7 +55,6 @@ fun HomeScreen(
     viewModel: HomeViewModel,
     username: String?,
     onOpenChat: (Long) -> Unit,
-    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -105,22 +103,19 @@ fun HomeScreen(
                 actions = {
                     TextButton(onClick = { showJoin = true }) { Text("加入") }
                     TextButton(onClick = { showCreate = true }) { Text("创建") }
-                    TextButton(onClick = onOpenSettings) { Text("设置") }
+                    // Refresh used to be a floating button; the bar now owns the bottom
+                    // safe area, so the action moved up here, where it also cannot cover
+                    // the last conversation row.
+                    TextButton(
+                        onClick = viewModel::refresh,
+                        enabled = !state.isLoading
+                    ) { Text("刷新") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = colors.surface,
                     titleContentColor = colors.textPrimary,
                     actionIconContentColor = colors.accent
                 )
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = viewModel::refresh,
-                containerColor = colors.accent,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                text = { Text("刷新") },
-                icon = {}
             )
         }
     ) { padding ->
@@ -151,7 +146,7 @@ fun HomeScreen(
                         )
                         HorizontalDivider(color = colors.divider)
                     }
-                    item { Spacer(Modifier.height(88.dp)) }
+                    item { Spacer(Modifier.height(92.dp)) }
                 }
             }
         }

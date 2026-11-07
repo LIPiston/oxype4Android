@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.oxype.client.BuildConfig
 import dev.oxype.client.data.session.ThemeMode
+import dev.oxype.client.ui.components.SenderAvatar
 import dev.oxype.client.ui.theme.oxypeColors
 
 /**
@@ -50,7 +51,7 @@ import dev.oxype.client.ui.theme.oxypeColors
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onBack: () -> Unit,
+    onOpenProfile: () -> Unit,
     onSignedOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -85,7 +86,6 @@ fun SettingsScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
                 title = { Text("设置") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = colors.surface,
@@ -100,26 +100,41 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
+                .padding(bottom = 104.dp)
         ) {
             SectionHeader("账户")
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(onClick = onOpenProfile)
                     .background(colors.surface)
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = state.username ?: "已登录用户",
-                    style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
-                    color = colors.textPrimary
+                SenderAvatar(
+                    name = state.username,
+                    avatarUrl = state.avatarUrl,
+                    size = 24.dp
                 )
-                state.userId?.let {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 10.dp)
+                ) {
                     Text(
-                        text = "用户编号 $it",
-                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                        color = colors.textSecondary
+                        text = state.username ?: "已登录用户",
+                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                        color = colors.textPrimary
                     )
+                    state.userId?.let {
+                        Text(
+                            text = "用户编号 $it",
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                            color = colors.textSecondary
+                        )
+                    }
                 }
+                Text("›", color = colors.textSecondary)
             }
 
             Spacer(Modifier.height(16.dp))

@@ -12,6 +12,7 @@ import dev.oxype.client.ui.auth.AuthViewModel
 import dev.oxype.client.ui.chat.ChatViewModel
 import dev.oxype.client.ui.groupinfo.GroupInfoViewModel
 import dev.oxype.client.ui.home.HomeViewModel
+import dev.oxype.client.ui.profile.ProfileViewModel
 import dev.oxype.client.ui.settings.SettingsViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -100,6 +101,9 @@ class OxypeViewModelFactory(private val container: AppContainer) : ViewModelProv
 
             modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
                 SettingsViewModel(repository, container) as T
+
+            modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
+                ProfileViewModel(repository) as T
 
             else -> error("Unknown ViewModel class: ${modelClass.name}")
         }
