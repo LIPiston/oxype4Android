@@ -129,7 +129,7 @@
 | `owner` | `ownerId`、`owner_id` | 成员数计算与完整性判断 |
 | `members` | `memberIds`、`member_ids` | 成员 id |
 | `admins` | `adminIds`、`admin_ids` | 管理员 id |
-| `avatarUrl` 等 | 见第 7 节 | 当前 `SessionSummary` 不读会话头像 |
+| `avatarUrl` 等 | 见第 7 节 | 会话头像；`SessionSummary` 不读，群聊信息页读 `SessionDetail` |
 
 `SessionSummary.isComplete` = `ownerId > 0 || memberIds.isNotEmpty()`。不完整的行会用 5.7 补全。
 
@@ -137,7 +137,9 @@
 
 客户端优先 POST；POST 失败（非 401）或解析出的 `SessionDetail` 不完整时，回退 GET。两者都不可用或不完整时抛 `PROTOCOL`（"会话信息不完整：服务器没有返回成员或所有者"）或保留第一个传输错误。
 
-`SessionDetail` 读取：`sessionId`（别名 `session_id`、`id`，缺失用请求里的 id）、`sessionName`/`name`/`title`、`description`、`owner`/`ownerId`、`isOwner`/`is_owner`、`isAdmin`/`is_admin`、成员列表 `users`/`members`/`list`（每项 `userid`/`userId`/`id` + `username`/`name` + 头像别名）；没有对象成员时退回 `members` 的 id 数组并生成 `用户 <id>`。
+`SessionDetail` 读取：`sessionId`（别名 `session_id`、`id`，缺失用请求里的 id）、`sessionName`/`name`/`title`、`description`、`owner`/`ownerId`、`isOwner`/`is_owner`、`isAdmin`/`is_admin`、管理员 id `admins`（别名 `adminIds`、`admin_ids`）、会话头像（第 7 节的别名，`SessionDetail.avatarUrl`）、成员列表 `users`/`members`/`list`（每项 `userid`/`userId`/`id` + `username`/`name` + 头像别名）；没有对象成员时退回 `members` 的 id 数组并生成 `用户 <id>`。
+
+`admins` 与会话头像都是**可选**：缺失时分别是空列表与 `null`，不是错误（`OxypeApi.parseSessionDetail`）。
 
 `SessionDetail.isComplete` = `ownerId > 0 || members.isNotEmpty()`。这是为了防止"只有名字"的短响应被渲染成"0 位成员"。
 
@@ -146,6 +148,13 @@
 - 401 从任何一条会话的补全请求中冒出时**穿透**到调用方（会让应用登出）。
 - 403 与 404 等属于单会话，跳过并继续。
 - 全部失败（`collected` 为空且有 `firstFailure`）才抛错，避免把网络故障显示成空列表。
+
+群聊信息页的读取（`OxypeRepository.loadGroupInfo`）把这两条路由合起来：
+
+1. `sessionInfo`（先 POST，失败或响应不完整再 GET）是**必需**的：401 清凭据；POST 的 403 会先尝试 GET，两者都不行时把第一个传输错误原样抛给页面（不清 token）。
+2. `sessionMembers` 是**补充**：失败只让成员名退回 `用户 N`；只有 401 会登出。
+3. 合并时以 `sessionInfo` 的成员为准，目录只补 `username`/`avatarUrl`；占位名才会被替换，真实名不覆盖。
+4. `isOwner`/`isAdmin` 由 `ownerId`/`adminIds` + 当前用户 id 决定，服务端布尔只在 id 缺失时回退（见 `GroupInfo`）。
 
 ### 5.8 `POST /createSession`
 
@@ -169,9 +178,17 @@
 
 ```json
 {"pieces": [{"type": "text", "text": "…"}]}
+{"pieces": [{"type": "reply", "messageId": 12}, {"type": "text", "text": "…"}]}
 ```
 
-客户端当前只发 `type: "text"` 的单片段；`markdown` 只用于解析（见第 6 节）。
+客户端发 `type: "text"` 的片段，引用回复时在**首位**插入一个 `type: "reply"` 片段；`markdown` 只用于解析（见第 6 节）。
+
+回复片段的硬约束：
+
+- 只发 `messageId`（引用的目标序号）。发送者 id、名字与文本快照由**服务端**写入；客户端自己拼的快照会被忽略。
+- `reply` 必须**排在第一位**。服务端对出现在其他位置的 reply 返回 400（fixture 文案「reply 片段必须在首位」），所以不要为了排版把文本放在前面。
+- 引用目标不存在时服务端返回 404（fixture 文案 `Message N to reply to was not found`），整条消息不会写入。
+- 由此推论：**编辑一条引用消息时必须重发 reply 片段**，否则保存后的消息会丢掉引用。
 
 响应（任一形状）：
 
@@ -179,7 +196,7 @@
 - 裸数字 `12` → 12
 - 其他对象字段别名 `id`、`messageId`
 
-`seq <= 0` 一律视为**软拒绝**（`OxypeApi.sendText` 返回 `null`）。上游用 `seq: -1` 表示"调用者不是该会话成员、未发送"。客户端把它显示为"消息未发送：你可能已不在该会话中"，而不是异常。
+`seq <= 0` 一律视为**软拒绝**（`OxypeApi.sendText` 返回 `null`）。上游用 `seq: -1` 表示"调用者不是该会话成员、未发送"。客户端把它显示为"消息未发送：你可能已不在该会话中"，而不是异常。发送失败时客户端**保留**回复目标与草稿，只有成功、切会话、关闭聊天或登出才清除。
 
 ### 5.11 `POST /getMessages/<sid>`
 
@@ -255,8 +272,8 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `type` | `text` → `TEXT`；`markdown` 或 `md` → `MARKDOWN`；缺失/null → 按 `TEXT`；其他值 → **跳过该片段** |
-| `text` | 别名 `content`、`value`，必须存在 |
+| `type` | `text` → `TEXT`；`markdown` 或 `md` → `MARKDOWN`；`reply` → 引用（见下）；缺失/null → 按 `TEXT`；其他值 → **跳过该片段** |
+| `text` | 别名 `content`、`value`，必须存在（`reply` 片段除外） |
 
 规则：
 
@@ -264,6 +281,32 @@
 - `ChatMessage.plainText` 直接拼接各片段文本，**没有富文本渲染器**（`markdown` 也只是原样显示）。
 - `ChatMessage.isEdited` = `editedAtMillis > 0`。
 - 同一 id 重复到达时保留一条；只有 `editedAt` 更大才替换已存内容（`MessageSyncCoordinator.isNewerRevision`）。
+
+### 6.1 `reply` 片段（引用）
+
+服务端把引用写成消息 `pieces` 里的一个片段，位置在首位：
+
+```json
+{"type": "reply", "messageId": 12, "sender": 3, "senderName": "林间小道", "text": "原话"}
+```
+
+客户端解析（`OxypeApi.parseReplyPiece` → `ChatMessage.reply: ReplyQuote?`）：
+
+| 字段 | 别名 | 客户端要求 |
+| --- | --- | --- |
+| `messageId` | `message_id`、`id`、`seq` | 必须 `>= 1`；缺失或非法时**整个引用被丢弃**，消息本身的正文照常显示 |
+| `sender` | `senderId`、`sender_id` | 可选，`>= 0` |
+| `senderName` | `sender_name`、`username`、`name` | 可选；空串/纯空白视为缺失 |
+| `text` | `content`、`value` | 可选；空串/纯空白视为缺失 |
+
+要点：
+
+- 引用是**元数据**，不进入 `plainText`，也不影响"没有可显示内容"的判定。一条只含 reply 片段（没有 text）的消息仍会因为没有正文而报协议错误。
+- 只有第一个 `reply` 片段生效（服务端只允许一个）。
+- `messageId` 是唯一硬依赖；`sender`/`senderName`/`text` 缺失时 UI 用本地已加载的消息补全（作者名 → `用户 N` → `未知用户`，正文缺失则不画那一行）。**快照字段拼写无法从客户端验证**，所以按可选处理。
+- 引用的是自己的消息时，作者行显示"我"，优先于快照里写入的昵称（`QuotePresentation.quoteAuthorName`）。
+- 快照是发送时冻结的：目标消息之后被删除，引用块仍然显示当时的作者与文本。
+- 跳回原消息只在已加载窗口内有效；不在窗口内时显示"原消息不在当前已加载的消息里"。
 
 ## 7. 头像
 
@@ -301,7 +344,7 @@ Oxype 对"不是该会话成员"的处理在不同路由上不一致，客户端
 | `POST /sendMessage/<sid>` | `200 {"seq": -1}` | 软拒绝，显示"消息未发送：你可能已不在该会话中" |
 | `POST /deleteMessage/<sid>` | `200 {"success": false}` | 软失败，不删本地行 |
 | `POST /receivedMessageSeq/…` | 未使用；fixture 对非成员软返回 `{"seq": 0}` | 客户端不调用 |
-| `GET /getSession`、`GET /getSessionUsers`、`POST /getSessionInfo` | `403` | 列表补全：单会话跳过（401 除外）；成员目录：静默失败 |
+| `GET /getSession`、`GET /getSessionUsers`、`POST /getSessionInfo` | `403` | 列表补全：单会话跳过（401 除外）；成员目录：静默失败；群聊信息页：`sessionInfo` 的 403 显示为页面错误 + 重试，成员目录的 403 只是名字退回 `用户 N` |
 
 设计意图：**空数组/`seq:-1`/`success:false` 都不能证明"内容不存在"**，只有 `lastMessage` 的 403 是明确信号。如果没有这条信号，一个被踢出的账号会看到一个永远安静、永远轮询的空会话。反过来，403 也绝不能清除全局登录——用户对其他会话仍然有效。
 
@@ -312,9 +355,10 @@ Oxype 对"不是该会话成员"的处理在不同路由上不一致，客户端
 `tools/ui-fixture/fixture_server.py` 只实现上述子集，用于本机 UI 走查：
 
 - 端口 `18080`，所有**成功**响应都套 Kalmia `data` 信封（**不覆盖裸数组/裸标量**这些客户端支持的形状）；错误响应是 `{"error_message": …}`。
-- 有：`login`、`isAlive`、`logout`、`getUser`、`getJoinedSessions`、`getSessions`、`getSessionInfo`、`getSession`、`getSessionUsers`、`receivedMessageSeq`、`lastMessage`、`getMessages`、`sendMessage`、`deleteMessage`、静态头像、`/health`。
+- 有：`login`、`isAlive`、`logout`、`getUser`、`getJoinedSessions`、`getSessions`、`getSessionInfo`、`getSession`、`getSessionUsers`、`receivedMessageSeq`、`lastMessage`、`getMessages`、`sendMessage`（含 reply 片段）、`deleteMessage`、静态头像（含会话头像 `/avatars/session-42.png`）、`/health`。
 - 没有：`register`、`createSession`、`joinSessionByUuid`、`createSessionInvite`。
-- 预置账号：用户 `1` / 密码 `testpass1`；会话 `42`「周末徒步小队」；消息序号 1..8。
+- 预置账号：用户 `1` / 密码 `testpass1`；会话 `42`「周末徒步小队」，`owner = 1`、`admins = [1, 2]`、带会话头像；消息序号 1..9，其中 7 引用 4、9 引用 8。
+- reply 的三条规则在 fixture 上都能复现：首位之外 → 400「reply 片段必须在首位」；未知目标 → 404 `Message N to reply to was not found`；目标被删后快照仍保留。
 - 状态全在内存，重启清零。
 
 因此 fixture 通过**不代表**真实服务通过；本文描述的所有容错（裸数组、别名、`Unknown`、软拒绝）在 fixture 中都不会被触发。

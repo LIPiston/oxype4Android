@@ -62,7 +62,10 @@ app/src/main/java/dev/oxype/client/
     ├── auth/                       AuthScreen + AuthViewModel（登录/注册/服务器地址）
     ├── home/                       HomeScreen + HomeViewModel（列表、创建、加入）
     ├── chat/                       ChatScreen + ChatViewModel + ChatListItems + SenderPresentation
-    ├── components/                 MessageBubble、BubbleWidthPolicy、SenderAvatar、AvatarImageLimits、SessionRow
+    │                               + QuotePresentation（引用作者/正文/可跳转）+ ReplyGestures（左滑/双击）
+    ├── groupinfo/                  GroupInfoScreen + GroupInfoViewModel（整页群聊信息）
+    ├── components/                 MessageBubble、QuoteBlock、BubbleWidthPolicy、SenderAvatar、
+    │                               AvatarImageLimits、SessionRow
     ├── settings/                   SettingsScreen + SettingsViewModel（地址、主题、退出、许可）
     └── theme/                      OxypeTheme / OxypeColors / oxypeColors
 ```
@@ -97,13 +100,19 @@ app/src/main/java/dev/oxype/client/
 12. **认证恢复三态。** `AuthRestoreState` = `CHECKING` / `READY` / `SIGNED_OUT`。`credentials == null` 不能区分"还没校验"和"已登出"，所以恢复期必须显示占位而不是登录页或空聊天。`isAlive` 只有明确 false 或 401 才登出；网络/5xx 视为"无法判断"，保留 token。
 13. **协议层错误分类先看状态码。** 非 2xx 先按状态分类，再用响应体补充文案；HTML 错误页不得被当成 JSON 解析成功。2xx 但解析失败是 `PROTOCOL`，空响应体解码为 `null`。
 14. **头像 URL 是不可信输入。** 只放行 `http`/`https`；相对路径解析到当前服务器；请求头像时**不带** token（可能指向第三方）。下载上限 `AvatarImageLimits.MAX_BYTES = 3 * 1024 * 1024`，先读 bounds 再按 2 的幂采样到 `TARGET_PX = 96`。
+15. **`reply` 片段必须在 `pieces` 首位，且只发 `messageId`。** 服务端写发送者/名字/文本快照并拒绝非首位 reply（400）；客户端拼的快照会被忽略。编辑引用消息必须重发 reply 片段，否则保存后引用丢失（`OxypeApi.sendText`）。`reply` 不进入 `plainText`，也不参与"没有可显示内容"的判定。
+16. **引用解析只有 `messageId` 是硬依赖。** 缺它则丢弃整块引用但保留正文；`sender`/`senderName`/`text` 缺失时回退到本地已加载消息（作者名 → `用户 N` → `未知用户`，正文缺失不画那一行）。引用自己的消息，作者行**先判自己显示「我」**，再取快照名（`QuotePresentation.quoteAuthorName`，对应 spec §7）。
+17. **跳回原消息只在已加载窗口内。** 用 `ChatListItems.lazyIndexForMessage` 定位；不在窗口内时显示「原消息不在当前已加载的消息里」，不要伪造滚动位置。
+18. **回复目标只在成功发送、切会话、`close()`、登出时清除。** 发送失败必须同时保留 `replyTarget` 与草稿，让用户原样重试（`ChatViewModel.send`）。
+19. **进入群聊信息页不得关闭聊天。** `Destination.GroupInfo` 返回时只切回 `Destination.Chat`，不调用 `chatViewModel.close()`，否则转写、草稿与滚动位置全丢、并重跑首屏历史。`groupinfo` 的 saver 要带占位标题/副标题。
+20. **群主/管理员只有一个来源。** `ownerId`/`adminIds` + 当前用户 id 计算 `GroupInfo.isOwner`/`isAdmin`；服务端布尔仅在 id 缺失时回退。页面不得自行二次判断，否则头部徽标与成员行标签会互相矛盾（`OxypeRepository.loadGroupInfo`）。
 
 ## 5. 测试与验证命令（Windows / Git Bash）
 
 在仓库根目录执行（Git Bash 下需带 `./`；cmd 里可写 `gradlew.bat`，PowerShell 需 `.\gradlew.bat`）。
 
 ```bash
-# 单元测试（JVM，无 Android/设备依赖；最近记录 257 个用例）
+# 单元测试（JVM，无 Android/设备依赖；最近记录 324 个用例）
 ./gradlew.bat --offline :app:testDebugUnitTest
 
 # 构建 debug APK，产物 app/build/outputs/apk/debug/app-debug.apk
@@ -127,11 +136,11 @@ grep -ho 'failures="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | gr
 - HTML 报告：`app/build/reports/tests/testDebugUnitTest/index.html`。
 - Lint 文本结果：`app/build/reports/lint-results-debug.txt`。
 
-测试位于 `app/src/test/java/dev/oxype/client/`，共 17 个测试类。`testsupport/TestSupport.kt` 提供 `FakeSessionStorage`（内存版 `SessionStorage`）与 `ScriptedTransport`（按路由脚本化的 `HttpTransport`）。新行为必须用这两者写可回归的 JVM 测试，不要新增只在真机上能跑的断言。
+测试位于 `app/src/test/java/dev/oxype/client/`，共 25 个测试类。`testsupport/TestSupport.kt` 提供 `FakeSessionStorage`（内存版 `SessionStorage`）与 `ScriptedTransport`（按路由脚本化的 `HttpTransport`）。新行为必须用这两者写可回归的 JVM 测试，不要新增只在真机上能跑的断言。
 
 ## 6. 本机联调（fixture，不是真实服务器）
 
-`tools/ui-fixture/` 是一个**内存态 Oxype 协议模拟器**（Python 标准库，无第三方依赖），只用于在模拟器里走查 UI：群聊、气泡宽度、头像/首字母兜底、发送、删除。它不在 APK 里，也不代表上游服务。
+`tools/ui-fixture/` 是一个**内存态 Oxype 协议模拟器**（Python 标准库，无第三方依赖），只用于在模拟器里走查 UI：群聊、气泡宽度、头像/首字母兜底、发送、引用回复、删除、群聊信息页。它不在 APK 里，也不代表上游服务。
 
 ```bash
 # 1) 启动 fixture（监听 127.0.0.1:18080）
@@ -150,7 +159,8 @@ adb -s 127.0.0.1:16384 reverse tcp:18080 tcp:18080
 注意：
 
 - 走 `adb reverse` 时**必须填 `127.0.0.1:18080`**，不要填默认的 `10.0.2.2:12345`——后者是模拟器直连宿主机，不经过 reverse。
-- fixture 实现了 `POST /login/{userid}`、`POST /isAlive/{userid}`、`POST /logout/{userid}`、`GET /getUser/{userid}`、`GET /getJoinedSessions/{userid}`、`POST /getSessions`、`POST /getSessionInfo/{sessionId}`、`GET /getSession/{sessionId}`、`GET /getSessionUsers/{sessionId}`、`POST /receivedMessageSeq/{userid}/{sessionId}`、`GET /lastMessage/{sessionId}`、`POST /getMessages/{sessionId}`、`POST /sendMessage/{sessionId}`、`POST /deleteMessage/{sessionId}`，外加静态头像与 `/health`。**它没有 `/register`，也没有 `createSession`/`joinSessionByUuid`/`createSessionInvite`**，所以 fixture 下只能登录预置账号、走查已有会话，不能验证注册、创建或加入。
+- fixture 实现了 `POST /login/{userid}`、`POST /isAlive/{userid}`、`POST /logout/{userid}`、`GET /getUser/{userid}`、`GET /getJoinedSessions/{userid}`、`POST /getSessions`、`POST /getSessionInfo/{sessionId}`、`GET /getSession/{sessionId}`、`GET /getSessionUsers/{sessionId}`、`POST /receivedMessageSeq/{userid}/{sessionId}`、`GET /lastMessage/{sessionId}`、`POST /getMessages/{sessionId}`、`POST /sendMessage/{sessionId}`（含首位 reply 片段）、`POST /deleteMessage/{sessionId}`，外加静态头像（成员头像与会话头像 `/avatars/session-42.png`）与 `/health`。**它没有 `/register`，也没有 `createSession`/`joinSessionByUuid`/`createSessionInvite`**，所以 fixture 下只能登录预置账号、走查已有会话，不能验证注册、创建或加入。
+- 会话 42 预置 `owner = 1`、`admins = [1, 2]`、带会话头像；消息 1..9，其中 7 引用 4、9 引用 8。reply 的三条规则都能在 fixture 上复现：非首位 → 400「reply 片段必须在首位」，未知目标 → 404 `Message N to reply to was not found`，目标被删后快照仍保留。
 - 设备重连、模拟器重启、`adb kill-server` 之后 reverse 会丢失，重新执行第 2 步。
 - 停止：fixture 终端 Ctrl+C（或杀掉后台进程）。fixture 状态只在内存里，重启即重置。
 
@@ -173,10 +183,11 @@ adb -s 127.0.0.1:16384 reverse tcp:18080 tcp:18080
 - 注册、登录、退出登录；启动时 `isAlive` 校验本地 token，401 登出、网络失败保留。
 - 已加入会话列表（`getJoinedSessions` + `getSessions`，缺失字段用 `getSessionInfo`/`getSession` 补全）、创建会话、用邀请 UUID 加入。
 - 首屏历史（`/lastMessage` 锚定，30 条窗口；锚点不可用时的 100 条推测窗口）、向上翻页、前台 3 秒 HTTP 轮询。
-- 发送纯文本（发送后回读权威记录）、删除自己发送的消息、复制文本。
+- 发送纯文本、引用回复（长按菜单 / 左滑 / 双击右侧，正文与作者快照，点击跳回已加载的原消息）、删除自己发送的消息、复制文本。
 - 群聊发送者名称与头像（失败时 `用户 N` + 名称首字母彩色圆盘）。
+- 群聊信息页（点击聊天标题进入）：会话头像、简介、成员列表与群主/管理员标签、`（我）`、会话编号；返回不关闭聊天。
 - 服务器地址可改（登录页与设置页，持久化到 `oxype_client_session`）、浅色/深色/跟随系统主题。
-- 单 Activity 导航、状态保存与恢复、退出/过期回登录页。
+- 单 Activity 导航、状态保存与恢复（含 `groupinfo` 目的地）、退出/过期回登录页。
 
 明确未实现（不要写成已有）：
 
