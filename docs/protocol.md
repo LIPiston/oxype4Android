@@ -252,9 +252,58 @@
 
 **当前 UI 不使用**（`OxypeApi.createInvite` 无调用方）。
 
-### 5.17 客户端未调用但上游存在
+### 5.17 `GET /getUser/<uid>`（本人资料）
 
-`GET /getUser/{uid}`、`POST /getMessage/{sid}`、`POST /editMessage/{sid}`、`POST /updateSession/{sid}`、`GET /getHash?path=`、头像上传、WebSocket `/oxype` 等均不在本客户端实现范围内。看到相关字段（如 `editedAt`）只说明客户端能**解析**，不代表有对应功能。
+响应：对象，账号记录。客户端只读三个字段：
+
+| 字段 | 别名 | 客户端要求 |
+| --- | --- | --- |
+| `id` | `userid`、`userId` | 缺失 → 用凭据里的 `userId` |
+| `username` | `name` | 空串/纯空白 → `用户 <id>` |
+| 头像 | 见第 7 节 | 缺失 → 无头像 |
+
+**只用于读自己的资料页**；客户端不提供按 id 查他人资料的入口（加入会话时拿到的成员信息已经够用）。
+
+### 5.18 `GET /getAvatar/<uid>`
+
+响应：对象，形状与上传/删除的返回一致：
+
+```json
+{"kind":"user","id":1,"name":"舟舟","avatarUrl":"/avatar/u1-3f9a1c04.png",
+ "hasAvatar":true,"maxBytes":3145728,"maxEdge":4096,
+ "formats":["image/png","image/jpeg","image/webp","image/gif"]}
+```
+
+- `avatarUrl` **总是存在**：没有头像时是空串，不是缺键。客户端把空串当"无头像"，相对路径按第 7 节解析。
+- `hasAvatar` 是权威布尔；缺失时客户端按 `avatarUrl` 是否非空推断。
+- `maxBytes` / `maxEdge` / `formats` 是服务端自己的上传限制，客户端读取后用于页面说明与本地预校验（缺失时回退到 3 MB / 4096 像素）。
+- 权限：本人可见；与目标账号**至少共享一个会话**的调用者也可见。其余是 `403`——客户端**不能**因此登出，资料页会退回到 `getUser` 给出的名字与头像 URL。
+- 客户端把 `getUser` 与 `getAvatar` 合并成一次资料读取：`getAvatar` 失败（403/404/网络）只丢上传限制与权威 `hasAvatar`，名字照常显示；只有 `401` 才向上冒泡并清凭据。
+
+### 5.19 `POST /uploadAvatar/<uid>`
+
+请求体：`{"userid":<uid>,"token":…,"image":"<base64>"}`。`image` 可以带 `data:image/png;base64,` 前缀，服务端会剥掉；客户端发送前也剥一次（两处都接受，保持一致）。
+
+成功：`200` + 与 5.18 同形状的对象（`avatarUrl` 指向新文件名）。
+
+失败：
+
+| 状态 | 含义 | 客户端行为 |
+| --- | --- | --- |
+| `400` | 体不是合法 base64、为空、不是 PNG/JPEG/WebP/GIF、超过 3 MB、任一边超过 4096 | 显示服务器文案（本地预校验已经挡掉绝大多数；剩下的按 400 文案显示） |
+| `401` | token 失效 | 清凭据回登录页 |
+| `403` | 替别人改头像 | 行内错误，**不清 token** |
+| `404` | 账号不存在 | 行内错误 |
+
+文件名形如 `u<uid>-<8 位内容哈希>.<扩展名>`：内容变了 URL 就变，客户端不需要处理缓存失效。上传只接受**自己的** `uid`。
+
+### 5.20 `POST /removeAvatar/<uid>`
+
+请求体：`{"userid":<uid>,"token":…}`（无其他字段）。成功 `200` + 同形状对象，其中 `avatarUrl` 为空串、`hasAvatar = false`。幂等：本来就没有头像也返回成功。删除后服务端会删掉该账号的旧文件，旧 URL 不再可读。
+
+### 5.21 客户端未调用但上游存在
+
+`POST /getMessage/{sid}`、`POST /editMessage/{sid}`、`POST /updateSession/{sid}`、`GET /getHash?path=`、会话头像上传/删除、WebSocket `/oxype` 等均不在本客户端实现范围内。看到相关字段（如 `editedAt`）只说明客户端能**解析**，不代表有对应功能。
 
 ## 6. 消息结构
 
@@ -333,6 +382,24 @@
 
 先 `contentLengthLong` 预检，再在读流时二次限流（`readAtMost`），宁可返回 `null` 也不解码半截图片。上游文档给出的上传限制是"最大 3 MB、每边 4096 像素"（`maxBytes`/`maxEdge`），客户端下载侧只对齐字节上限，边长由采样控制——`TARGET_PX = 96` 保证不会分配接近原图尺寸的位图。
 
+### 7.1 上传前本地校验（`AvatarUploadRules`）
+
+上传和下载用的是同一组常量（`MAX_BYTES = 3 * 1024 * 1024`、`MAX_EDGE = 4096`），但**校验顺序与依据**必须与服务端一致，否则会出现"本地通过、服务器 400"：
+
+| 检查 | 依据 | 不通过时的文案 |
+| --- | --- | --- |
+| 有字节 | `bytes.isEmpty()` | `没有可用的图片数据` |
+| 格式 | **magic bytes**（PNG `89 50 4E 47`、JPEG `FF D8 FF`、GIF `47 49 46 38`、WebP `RIFF....WEBP`） | `图片必须是 PNG、JPEG、WebP 或 GIF` |
+| 大小 | 解码后的真实字节数，`> MAX_BYTES` 才拒绝（等于上限通过） | `图片不能超过 3 MB` |
+| 边长 | 从头部读到的尺寸，任一边 `> 4096` 才拒绝 | `图片每条边不能超过 4096 像素` |
+
+要点：
+
+- 扩展名与客户端声明的 MIME **完全不参与判断**，只看前 4~12 个字节——一个改名 `.png` 的 HTML 文档会被当成非图片拒绝。
+- 头部读不出尺寸时（例如布局不认识的 JPEG 变体）**不按尺寸拒绝**，交给服务端判断；这是与服务端 `dimensions()` 返回 `null` 就放行一致的。
+- 选择图片后的处理链（`AvatarPicker` + `AvatarEncoding`）在 `Dispatchers.Default` 上执行：限流读取 → 头部校验 → `inJustDecodeBounds` → 按 2 的幂采样解码 → 精确缩放到 4096 以内 → 先试无损 PNG，再按 90/80/70 的 JPEG 质量重编码，取第一个不超过 3 MB 的结果。全链路失败时才给用户"无法读取这张图片"或"缩小后仍然超过 3 MB"。
+- 这些规则是无 Android 依赖的纯 Kotlin（`ui/profile/AvatarUploadRules.kt`、`AvatarEncoding.kt`），由 JVM 测试锁定。
+
 ## 8. 非成员（软失败）的表现
 
 Oxype 对"不是该会话成员"的处理在不同路由上不一致，客户端因此必须按路由分别对待：
@@ -355,10 +422,11 @@ Oxype 对"不是该会话成员"的处理在不同路由上不一致，客户端
 `tools/ui-fixture/fixture_server.py` 只实现上述子集，用于本机 UI 走查：
 
 - 端口 `18080`，所有**成功**响应都套 Kalmia `data` 信封（**不覆盖裸数组/裸标量**这些客户端支持的形状）；错误响应是 `{"error_message": …}`。
-- 有：`login`、`isAlive`、`logout`、`getUser`、`getJoinedSessions`、`getSessions`、`getSessionInfo`、`getSession`、`getSessionUsers`、`receivedMessageSeq`、`lastMessage`、`getMessages`、`sendMessage`（含 reply 片段）、`deleteMessage`、静态头像（含会话头像 `/avatars/session-42.png`）、`/health`。
+- 有：`login`、`isAlive`、`logout`、`getUser`、`getAvatar`、`uploadAvatar`、`removeAvatar`、`getJoinedSessions`、`getSessions`、`getSessionInfo`、`getSession`、`getSessionUsers`、`receivedMessageSeq`、`lastMessage`、`getMessages`、`sendMessage`（含 reply 片段）、`deleteMessage`、静态头像（成员头像 `/avatars/alex.png`、本人 `/avatars/zhouzhou.png`、会话头像 `/avatars/session-42.png`、上传后由 `/avatar/u1-<hash>.png` 提供）、`/health`。
 - 没有：`register`、`createSession`、`joinSessionByUuid`、`createSessionInvite`。
-- 预置账号：用户 `1` / 密码 `testpass1`；会话 `42`「周末徒步小队」，`owner = 1`、`admins = [1, 2]`、带会话头像；消息序号 1..9，其中 7 引用 4、9 引用 8。
+- 预置账号：用户 `1` / 密码 `testpass1`，带一张本人头像；会话 `42`「周末徒步小队」，`owner = 1`、`admins = [1, 2]`、带会话头像；消息序号 1..9，其中 7 引用 4、9 引用 8。
+- 头像路由与真实服务同规则：`getAvatar` 对共享会话的账号返回 200、对陌生人 403；`uploadAvatar` 只接受自己的 uid（否则 403）、按 magic bytes 校验格式与 3 MB / 4096 像素上限（否则 400）、文件名带内容哈希；`removeAvatar` 幂等并删掉旧文件。走查上传/移除后 `getUser` 的 `avatarUrl` 会跟着变，可以验证资料页真的以服务器为准。用户 `5` 不在任何会话里，用来复现 `getAvatar` 的 403 分支。
 - reply 的三条规则在 fixture 上都能复现：首位之外 → 400「reply 片段必须在首位」；未知目标 → 404 `Message N to reply to was not found`；目标被删后快照仍保留。
-- 状态全在内存，重启清零。
+- 状态全在内存，重启清零（上传的头像也随之丢失，回到预置图片）。
 
 因此 fixture 通过**不代表**真实服务通过；本文描述的所有容错（裸数组、别名、`Unknown`、软拒绝）在 fixture 中都不会被触发。

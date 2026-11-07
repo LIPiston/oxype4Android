@@ -44,7 +44,7 @@
 app/src/main/java/dev/oxype/client/
 ├── MainActivity.kt                 唯一 Activity，只负责 setContent { AppRoot(container) }
 ├── data/
-│   ├── OxypeRepository.kt          唯一状态源：认证、会话列表、聊天快照、轮询、发送、删除
+│   ├── OxypeRepository.kt          唯一状态源：认证、会话列表、聊天快照、个人资料、轮询、发送、删除
 │   ├── oxype/                      协议层（唯一的协议知识来源）
 │   │   ├── HttpTransport.kt        传输接缝：HttpRequest/HttpResponse/接口定义
 │   │   ├── HttpUrlConnectionTransport.kt  真实实现，每请求一个连接，15s 超时
@@ -57,16 +57,18 @@ app/src/main/java/dev/oxype/client/
 │   └── session/SessionStore.kt     SharedPreferences：token、用户名、base URL、主题；SessionStorage 接口
 └── ui/
     ├── AppContainer.kt             AppContainer / OxypeApplication / OxypeViewModelFactory / ThemeSettings
-    ├── AppRoot.kt                  Compose 根，恢复占位、目的地切换、主题
-    ├── AppNavigation.kt            NavigationState/Destination 状态机 + rememberSaveable 持久化
+    ├── AppRoot.kt                  Compose 根，恢复占位、目的地切换 + 过渡动画、底栏宿主、主题
+    ├── AppNavigation.kt            NavigationState/Destination 状态机 + tabIndexOf/sectionFor + rememberSaveable 持久化
     ├── auth/                       AuthScreen + AuthViewModel（登录/注册/服务器地址）
-    ├── home/                       HomeScreen + HomeViewModel（列表、创建、加入）
+    ├── home/                       HomeScreen + HomeViewModel（列表、创建、加入、刷新）
     ├── chat/                       ChatScreen + ChatViewModel + ChatListItems + SenderPresentation
     │                               + QuotePresentation（引用作者/正文/可跳转）+ ReplyGestures（左滑/双击）
     ├── groupinfo/                  GroupInfoScreen + GroupInfoViewModel（整页群聊信息）
+    ├── profile/                    ProfileScreen + ProfileViewModel + AvatarPicker + AvatarEncoding
+    │                               + AvatarUploadRules（纯 Kotlin：格式/尺寸/大小校验）
     ├── components/                 MessageBubble、QuoteBlock、BubbleWidthPolicy、SenderAvatar、
-    │                               AvatarImageLimits、SessionRow
-    ├── settings/                   SettingsScreen + SettingsViewModel（地址、主题、退出、许可）
+    │                               AvatarImageLimits、SessionRow、OxypeBottomBar（三入口胶囊底栏）
+    ├── settings/                   SettingsScreen + SettingsViewModel（账户入口、地址、主题、退出、许可）
     └── theme/                      OxypeTheme / OxypeColors / oxypeColors
 ```
 
@@ -107,13 +109,15 @@ app/src/main/java/dev/oxype/client/
 19. **进入群聊信息页不得关闭聊天。** `Destination.GroupInfo` 返回时只切回 `Destination.Chat`，不调用 `chatViewModel.close()`，否则转写、草稿与滚动位置全丢、并重跑首屏历史。`groupinfo` 的 saver 要带占位标题/副标题。聊天的 `LazyListState` 由 `retainedChatSessionId` 提供的稳定键经 `SaveableStateHolder` 保留；真正离开会话时该键必须落回 `0`。
 20. **群主/管理员只有一个来源。** 先把服务端布尔-only 的答案折进 `ownerId`/`adminIds`，再统一按 id 计算 `isOwner`/`isAdmin`；头部徽标与成员行标签都经 `GroupInfo.roleOf`，页面不得自行二次判断（`OxypeRepository.loadGroupInfo`）。
 21. **群聊信息缓存绑定完整登录身份。** `generation|userId|baseUrl` 任一变化都必须重新加载；重新进入页面要重新请求（只有旋转复用缓存），否则会长期显示上一个账号/上一个服务器的成员与角色。
+22. **个人资料缓存绑定同一个身份键。** `ProfileSnapshot.identity = generation|userId|baseUrl`；`loadProfile` / `uploadAvatar` / `removeAvatar` 在第一次挂起前取 `AuthOwner`，回来先用 `isCurrentAuth` 校验再发布。`login` / `signOutLocally` 都要 `clearProfile()`。资料页的 401 走 `invalidateCredentials(owner)`，403 只做行内提示（上传自己的头像不会 403，但共享会话之外的 `getAvatar` 会）。头像**存服务器**（`/avatar/u<id>-<hash>.<ext>`），客户端不落盘、只做内存图片缓存。
+23. **头像上传的本地校验必须与服务端同规则。** 格式按 magic bytes、长度上限 3 MB、任一边 4096（`AvatarUploadRules`，纯 Kotlin，有 JVM 测试）；不要按扩展名或声明 MIME 判断，也不要在头部读不出尺寸时按尺寸拒绝。图片选择后的解码/缩放/重编码只在 `Dispatchers.Default` 上做（`AvatarPicker`），失败给可读文案而不是抛异常。
 
 ## 5. 测试与验证命令（Windows / Git Bash）
 
 在仓库根目录执行（Git Bash 下需带 `./`；cmd 里可写 `gradlew.bat`，PowerShell 需 `.\gradlew.bat`）。
 
 ```bash
-# 单元测试（JVM，无 Android/设备依赖；最近记录 338 个用例）
+# 单元测试（JVM，无 Android/设备依赖；最近记录 395 个用例 / 31 个测试类）
 ./gradlew.bat --offline :app:testDebugUnitTest
 
 # 构建 debug APK，产物 app/build/outputs/apk/debug/app-debug.apk
@@ -137,11 +141,11 @@ grep -ho 'failures="[0-9]*"' app/build/test-results/testDebugUnitTest/*.xml | gr
 - HTML 报告：`app/build/reports/tests/testDebugUnitTest/index.html`。
 - Lint 文本结果：`app/build/reports/lint-results-debug.txt`。
 
-测试位于 `app/src/test/java/dev/oxype/client/`，共 25 个测试类。`testsupport/TestSupport.kt` 提供 `FakeSessionStorage`（内存版 `SessionStorage`）与 `ScriptedTransport`（按路由脚本化的 `HttpTransport`）。新行为必须用这两者写可回归的 JVM 测试，不要新增只在真机上能跑的断言。
+测试位于 `app/src/test/java/dev/oxype/client/`，共 31 个测试类。`testsupport/TestSupport.kt` 提供 `FakeSessionStorage`（内存版 `SessionStorage`）与 `ScriptedTransport`（按路由脚本化的 `HttpTransport`）。新行为必须用这两者写可回归的 JVM 测试，不要新增只在真机上能跑的断言。
 
 ## 6. 本机联调（fixture，不是真实服务器）
 
-`tools/ui-fixture/` 是一个**内存态 Oxype 协议模拟器**（Python 标准库，无第三方依赖），只用于在模拟器里走查 UI：群聊、气泡宽度、头像/首字母兜底、发送、引用回复、删除、群聊信息页。它不在 APK 里，也不代表上游服务。
+`tools/ui-fixture/` 是一个**内存态 Oxype 协议模拟器**（Python 标准库，无第三方依赖），只用于在模拟器里走查 UI：三入口底栏与页面切换、群聊、气泡宽度、头像/首字母兜底、个人资料与头像上传/移除、发送、引用回复、删除、群聊信息页。它不在 APK 里，也不代表上游服务。
 
 ```bash
 # 1) 启动 fixture（监听 127.0.0.1:18080）
@@ -155,12 +159,14 @@ adb -s 127.0.0.1:16384 reverse tcp:18080 tcp:18080
 #    http://127.0.0.1:18080
 #    登录：用户编号 1，密码 testpass1
 #    会话：42「周末徒步小队」
+#    个人资料：底栏第三项，可设置/更换/移除本人头像
 ```
 
 注意：
 
 - 走 `adb reverse` 时**必须填 `127.0.0.1:18080`**，不要填默认的 `10.0.2.2:12345`——后者是模拟器直连宿主机，不经过 reverse。
-- fixture 实现了 `POST /login/{userid}`、`POST /isAlive/{userid}`、`POST /logout/{userid}`、`GET /getUser/{userid}`、`GET /getJoinedSessions/{userid}`、`POST /getSessions`、`POST /getSessionInfo/{sessionId}`、`GET /getSession/{sessionId}`、`GET /getSessionUsers/{sessionId}`、`POST /receivedMessageSeq/{userid}/{sessionId}`、`GET /lastMessage/{sessionId}`、`POST /getMessages/{sessionId}`、`POST /sendMessage/{sessionId}`（含首位 reply 片段）、`POST /deleteMessage/{sessionId}`，外加静态头像（成员头像与会话头像 `/avatars/session-42.png`）与 `/health`。**它没有 `/register`，也没有 `createSession`/`joinSessionByUuid`/`createSessionInvite`**，所以 fixture 下只能登录预置账号、走查已有会话，不能验证注册、创建或加入。
+- fixture 实现了 `POST /login/{userid}`、`POST /isAlive/{userid}`、`POST /logout/{userid}`、`GET /getUser/{userid}`、`GET /getAvatar/{userid}`、`POST /uploadAvatar/{userid}`、`POST /removeAvatar/{userid}`、`GET /getJoinedSessions/{userid}`、`POST /getSessions`、`POST /getSessionInfo/{sessionId}`、`GET /getSession/{sessionId}`、`GET /getSessionUsers/{sessionId}`、`POST /receivedMessageSeq/{userid}/{sessionId}`、`GET /lastMessage/{sessionId}`、`POST /getMessages/{sessionId}`、`POST /sendMessage/{sessionId}`（含首位 reply 片段）、`POST /deleteMessage/{sessionId}`，外加静态头像（成员头像 `/avatars/alex.png`、本人头像 `/avatars/zhouzhou.png`、会话头像 `/avatars/session-42.png`）、上传后由 `/avatar/u1-<hash>.png` 提供的图片，以及 `/health`。**它没有 `/register`，也没有 `createSession`/`joinSessionByUuid`/`createSessionInvite`**，所以 fixture 下只能登录预置账号、走查已有会话，不能验证注册、创建或加入。
+- 头像路由按真实规则实现：`getAvatar` 对共享会话的账号返回 200、对陌生人 403；`uploadAvatar` 只接受自己的 uid（否则 403）、按 magic bytes 校验格式与 3 MB / 4096 像素上限（否则 400）、文件名带内容哈希；`removeAvatar` 幂等并删掉旧文件。走查时上传/移除后 `getUser` 的 `avatarUrl` 会跟着变，可以确认资料页以服务器为准。
 - 会话 42 预置 `owner = 1`、`admins = [1, 2]`、带会话头像；消息 1..9，其中 7 引用 4、9 引用 8。reply 的三条规则都能在 fixture 上复现：非首位 → 400「reply 片段必须在首位」，未知目标 → 404 `Message N to reply to was not found`，目标被删后快照仍保留。
 - 设备重连、模拟器重启、`adb kill-server` 之后 reverse 会丢失，重新执行第 2 步。
 - 停止：fixture 终端 Ctrl+C（或杀掉后台进程）。fixture 状态只在内存里，重启即重置。
@@ -183,17 +189,20 @@ adb -s 127.0.0.1:16384 reverse tcp:18080 tcp:18080
 
 - 注册、登录、退出登录；启动时 `isAlive` 校验本地 token，401 登出、网络失败保留。
 - 已加入会话列表（`getJoinedSessions` + `getSessions`，缺失字段用 `getSessionInfo`/`getSession` 补全）、创建会话、用邀请 UUID 加入。
+- 三入口悬浮胶囊底栏（聊天 / 设置 / 个人资料）：胶囊弹簧滑动、图标文字颜色过渡、按压反馈；聊天页与群聊信息页不显示底栏。顶层切换有短横向过渡，进入会话是右侧推入、chat ↔ 群聊信息是淡入淡出。
 - 首屏历史（`/lastMessage` 锚定，30 条窗口；锚点不可用时的 100 条推测窗口）、向上翻页、前台 3 秒 HTTP 轮询。
 - 发送纯文本、引用回复（长按菜单 / 左滑 / 双击右侧，正文与作者快照，点击跳回已加载的原消息）、删除自己发送的消息、复制文本。
 - 群聊发送者名称与头像（失败时 `用户 N` + 名称首字母彩色圆盘）。
 - 群聊信息页（点击聊天标题进入）：会话头像、简介、成员列表与群主/管理员标签、`（我）`、会话编号；返回不关闭聊天。
+- 个人资料页（底栏第三项，或设置页账户行进入）：用户名、账号编号、头像；支持从系统图片选择器设置/更换/移除**本人头像**（`uploadAvatar`/`removeAvatar`），上传前本地按服务端规则校验；头像由服务器保存，客户端不落盘。
 - 服务器地址可改（登录页与设置页，持久化到 `oxype_client_session`）、浅色/深色/跟随系统主题。
-- 单 Activity 导航、状态保存与恢复（含 `groupinfo` 目的地）、退出/过期回登录页。
+- 单 Activity 导航、状态保存与恢复（含 `groupinfo`/`profile` 目的地、各标签滚动位置）、退出/过期回登录页。
 
 明确未实现（不要写成已有）：
 
 - 媒体/附件（图片、文件、语音、视频）、消息编辑（虽然能解析 `editedAt`，但没有编辑入口）、已读回执展示与输入状态。
 - 推送通知、WebSocket `/oxype` 事件推送（只用轮询）。
 - 多账号、通话、频道、Stories、贴纸、机器人、群成员管理、会话级置顶、未读数、消息搜索。
-- 头像上传（只读展示，`createSessionInvite` 与 `receivedMessageSeq` 在 `OxypeApi` 中可用但当前 UI 未调用）。
+- 用户资料的编辑：用户名/密码没有修改入口，个人资料页只读显示（服务端也没有对应的公开路由）。**会话头像**的上传/移除（`uploadSessionAvatar` 等）未接入。
+- `createSessionInvite` 与 `receivedMessageSeq` 在 `OxypeApi` 中可用但当前 UI 未调用。
 - 端到端/E2E 测试与真实服务器集成验证。

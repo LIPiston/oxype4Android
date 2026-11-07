@@ -9,6 +9,7 @@ Run:  python -I fixture_server.py
 """
 
 import base64
+import hashlib
 import json
 import threading
 import time
@@ -28,6 +29,19 @@ SESSION_ID = 42
 AVATAR_PATH = "/avatars/alex.png"
 SESSION_AVATAR_PATH = "/avatars/session-42.png"
 BASE_AVATAR_URL = "http://127.0.0.1:18080"
+
+# The upload rules the real server enforces (AvatarStorage upstream). The fixture applies
+# the same limits so a picture the client would accept is also accepted here.
+AVATAR_MAX_BYTES = 3 * 1024 * 1024
+AVATAR_MAX_EDGE = 4096
+AVATAR_FORMATS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+# Uploaded pictures are served from here, the way the real `/avatar/...` folder works.
+AVATAR_FILE_PREFIX = "/avatar/"
 
 # 64x64 RGBA PNG, drawn inline so the fixture has no binary asset dependency.
 AVATAR_PNG = base64.b64decode(
@@ -59,12 +73,20 @@ def _solid_png(size, rgba):
 # recognisable at a glance.
 SESSION_AVATAR_PNG = _solid_png(64, (0x3E, 0x6B, 0x57, 0xFF))
 
+# The signed-in account's picture. Seeded so the profile page opens with a real avatar
+# and the "remove" action is reachable before anything has been uploaded.
+OWN_AVATAR_PATH = "/avatars/zhouzhou.png"
+OWN_AVATAR_PNG = _solid_png(64, (0x4A, 0x6F, 0xA5, 0xFF))
+
 USERS = {
-    1: {"userid": 1, "username": "舟舟"},
+    1: {"userid": 1, "username": "舟舟", "avatarUrl": BASE_AVATAR_URL + OWN_AVATAR_PATH},
     2: {"userid": 2, "username": "林晓"},
     3: {"userid": 3, "username": "Alex", "avatarUrl": BASE_AVATAR_URL + AVATAR_PATH},
     # Deliberately unreachable: exercises the client's initial-letter fallback.
     4: {"userid": 4, "username": "🌿青", "avatarUrl": BASE_AVATAR_URL + "/avatars/missing.png"},
+    # In no session: `getAvatar` answers 403 for this one, which is the "shared session"
+    # rule the real server applies. Nothing else in the fixture refers to it.
+    5: {"userid": 5, "username": "沈舟"},
 }
 
 SESSIONS = {
@@ -148,6 +170,15 @@ _max_seq = max(m["id"] for m in _messages)
 # (or one that was logged out) is still rejected with 401.
 _tokens = {FIXTURE_TOKEN: FIXTURE_USER_ID}
 
+# Uploaded account avatars, keyed by user id: the file name, exactly as the real server
+# stores it in the account record. The bytes live separately under `/avatar/...`, which is
+# what the picture URLs point at.
+_user_avatars = {}
+_avatar_files = {}
+# Accounts whose avatar was deliberately cleared, so the seeded picture does not come back
+# the moment `getUser` is asked again.
+_cleared_avatars = set()
+
 
 def _now_millis():
     return int(time.time() * 1000)
@@ -162,12 +193,107 @@ def _is_member(user_id, session_id):
     return session is not None and user_id in session["members"]
 
 
+def _shares_session(first, second):
+    """Whether two accounts are in at least one session together."""
+    if first == second:
+        return True
+    return any(
+        first in session["members"] and second in session["members"]
+        for session in SESSIONS.values()
+    )
+
+
 def _member_payload(user_id):
     user = USERS[user_id]
     entry = {"userid": user["userid"], "username": user["username"]}
-    if user.get("avatarUrl"):
-        entry["avatarUrl"] = user["avatarUrl"]
+    with _lock:
+        uploaded = _user_avatars.get(user_id)
+        cleared = user_id in _cleared_avatars
+    # An uploaded picture wins over the seeded one: it is what `getUser` would report
+    # after the account record was updated. A cleared account has no picture at all,
+    # even though the fixture seeded one to start with.
+    url = None if cleared else (_avatar_url(uploaded) if uploaded else user.get("avatarUrl"))
+    if url:
+        entry["avatarUrl"] = url
     return entry
+
+
+def _avatar_url(file_name):
+    """The URL an avatar file is served from, or "" when there is no avatar.
+
+    The real server writes a content hash into the file name and returns an absolute
+    path; the fixture keeps the same shape so replacing a picture produces a new URL
+    and the client's image cache cannot keep showing the previous one.
+    """
+    return BASE_AVATAR_URL + AVATAR_FILE_PREFIX + file_name if file_name else ""
+
+
+def _avatar_view(user_id):
+    """`avatarView` from upstream: the avatar state plus the upload rules."""
+    with _lock:
+        file_name = _user_avatars.get(user_id)
+        cleared = user_id in _cleared_avatars
+    # Seeded users point at a static file outside the upload folder; report it as an
+    # existing avatar so the page draws something before anything is uploaded.
+    seeded = USERS.get(user_id, {}).get("avatarUrl") or ""
+    url = "" if cleared else (_avatar_url(file_name) or seeded)
+    return {
+        "kind": "user",
+        "id": user_id,
+        "name": USERS.get(user_id, {}).get("username", ""),
+        "avatarUrl": url,
+        "hasAvatar": bool(url),
+        "maxBytes": AVATAR_MAX_BYTES,
+        "maxEdge": AVATAR_MAX_EDGE,
+        "formats": list(AVATAR_FORMATS.keys()),
+    }
+
+
+def _image_format(data):
+    """The MIME type of a picture, decided by its magic bytes rather than any label."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF8"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _image_edge(data, mime):
+    """The longer edge of a picture, or None when this fixture cannot read the header."""
+    try:
+        if mime == "image/png":
+            width, height = struct.unpack(">II", data[16:24])
+        elif mime == "image/gif":
+            width, height = struct.unpack("<HH", data[6:10])
+        elif mime == "image/webp":
+            width, height = struct.unpack("<HH", data[26:30])  # VP8 lossy
+            width &= 0x3FFF
+            height &= 0x3FFF
+        elif mime == "image/jpeg":
+            offset = 2
+            while offset + 9 < len(data):
+                if data[offset] != 0xFF:
+                    offset += 1
+                    continue
+                marker = data[offset + 1]
+                length = struct.unpack(">H", data[offset + 2:offset + 4])[0]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    offset += 2
+                    continue
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    height, width = struct.unpack(">HH", data[offset + 5:offset + 9])
+                    return max(width, height)
+                offset += 2 + length
+            return None
+        else:
+            return None
+        return max(width, height)
+    except (struct.error, ValueError):
+        return None
 
 
 def _session_summary(session):
@@ -320,6 +446,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, None, content_type="image/png", raw=SESSION_AVATAR_PNG)
             return
 
+        if path == OWN_AVATAR_PATH:
+            self._send(200, None, content_type="image/png", raw=OWN_AVATAR_PNG)
+            return
+
+        if path.startswith(AVATAR_FILE_PREFIX):
+            file_name = path[len(AVATAR_FILE_PREFIX):]
+            with _lock:
+                stored = _avatar_files.get(file_name)
+            if stored is None:
+                raise FixtureError(404, "no such avatar")
+            mime, raw = stored
+            self._send(200, None, content_type=mime, raw=raw)
+            return
+
         if path == "/avatars/missing.png":
             raise FixtureError(404, "no such avatar")
 
@@ -334,6 +474,19 @@ class Handler(BaseHTTPRequestHandler):
             if user_id not in USERS:
                 raise FixtureError(404, "用户不存在")
             self._ok(_member_payload(user_id))
+            return
+
+        if head == "getAvatar" and len(parts) == 2:
+            user_id = self._int(parts[1], "用户编号")
+            caller = self._query_user_id(params)
+            self._get_auth(params, caller)
+            if user_id not in USERS:
+                raise FixtureError(404, "用户不存在")
+            # Upstream lets an account see its own avatar and those of people it shares a
+            # session with; anything else is a 403 that must not sign the caller out.
+            if user_id != caller and not _shares_session(caller, user_id):
+                raise FixtureError(403, "无权查看该用户的头像")
+            self._ok(_avatar_view(user_id))
             return
 
         if head == "getJoinedSessions" and len(parts) == 2:
@@ -515,6 +668,74 @@ class Handler(BaseHTTPRequestHandler):
                 )
             print("  appended session=%s seq=%s sender=%s" % (session_id, seq, caller), flush=True)
             self._ok({"seq": seq})
+            return
+
+        if head == "uploadAvatar" and len(parts) == 2:
+            user_id = self._int(parts[1], "用户编号")
+            caller = self._body_user_id(body)
+            self._post_auth(body, caller)
+            if caller != user_id:
+                raise FixtureError(403, "只能改自己的头像")
+            if user_id not in USERS:
+                raise FixtureError(404, "用户不存在")
+            encoded = body.get("image")
+            if not isinstance(encoded, str) or not encoded.strip():
+                raise FixtureError(400, "没有可用的图片数据")
+            payload = encoded.strip()
+            if payload.startswith("data:"):
+                comma = payload.find(",")
+                if comma == -1:
+                    raise FixtureError(400, "图片数据不是合法的 base64")
+                payload = payload[comma + 1:]
+            try:
+                data = base64.b64decode(payload, validate=True)
+            except (ValueError, TypeError):
+                raise FixtureError(400, "图片数据不是合法的 base64")
+            if not data:
+                raise FixtureError(400, "没有可用的图片数据")
+            if len(data) > AVATAR_MAX_BYTES:
+                raise FixtureError(400, "The image is larger than 3 MB")
+            mime = _image_format(data)
+            if mime is None:
+                raise FixtureError(400, "The image must be a PNG, JPEG, WebP or GIF file")
+            edge = _image_edge(data, mime)
+            if edge is not None and edge > AVATAR_MAX_EDGE:
+                raise FixtureError(400, "The image must be at most 4096 pixels on each side")
+            # A content hash in the name is what makes a replacement a different URL, so
+            # the client's image cache cannot keep painting the previous picture.
+            digest = hashlib.sha256(data).hexdigest()[:8]
+            file_name = "u%d-%s.%s" % (user_id, digest, AVATAR_FORMATS[mime])
+            with _lock:
+                # A replacement deletes the previous file, as the real server does:
+                # `u<n>-<hash>` names are unique per content, so nothing else references
+                # the old one.
+                prefix = "u%d-" % user_id
+                for name in [n for n in _avatar_files if n.startswith(prefix)]:
+                    _avatar_files.pop(name, None)
+                _user_avatars[user_id] = file_name
+                _avatar_files[file_name] = (mime, data)
+                _cleared_avatars.discard(user_id)
+            print("  avatar updated user=%s file=%s" % (user_id, file_name), flush=True)
+            self._ok(_avatar_view(user_id))
+            return
+
+        if head == "removeAvatar" and len(parts) == 2:
+            user_id = self._int(parts[1], "用户编号")
+            caller = self._body_user_id(body)
+            self._post_auth(body, caller)
+            if caller != user_id:
+                raise FixtureError(403, "只能改自己的头像")
+            if user_id not in USERS:
+                raise FixtureError(404, "用户不存在")
+            with _lock:
+                _user_avatars.pop(user_id, None)
+                _cleared_avatars.add(user_id)
+                # Upstream deletes the account's files too, so a URL kept from before the
+                # removal stops serving the old picture.
+                prefix = "u%d-" % user_id
+                for name in [n for n in _avatar_files if n.startswith(prefix)]:
+                    _avatar_files.pop(name, None)
+            self._ok(_avatar_view(user_id))
             return
 
         if head == "deleteMessage" and len(parts) == 2:
