@@ -365,7 +365,11 @@ class OxypeApi(private val http: OxypeHttpClient) {
     }
 
     /**
-     * `POST /sendMessage/{sessionId}` with one text piece.
+     * `POST /sendMessage/{sessionId}` with a text piece and, optionally, a reply piece.
+     *
+     * A reply must lead with `{"type":"reply","messageId":N}`: the server rejects a reply
+     * piece anywhere else with 400, and it fills in the quoted sender/name/text itself —
+     * a client-supplied snapshot is ignored. Only [messageId] is sent.
      *
      * Returns the assigned sequence, or `null` for the server's soft refusal
      * (`{ seq: -1 }` when the caller is not a member). A refusal is not an exception:
@@ -374,7 +378,8 @@ class OxypeApi(private val http: OxypeHttpClient) {
     suspend fun sendText(
         credentials: AuthCredentials,
         sessionId: Long,
-        text: String
+        text: String,
+        replyTo: Long? = null
     ): Long? {
         val payload = http.postJson(
             path = "sendMessage/$sessionId",
@@ -382,6 +387,14 @@ class OxypeApi(private val http: OxypeHttpClient) {
                 put(
                     "pieces",
                     JSONArray().apply {
+                        if (replyTo != null) {
+                            put(
+                                JSONObject().apply {
+                                    put("type", "reply")
+                                    put("messageId", replyTo)
+                                }
+                            )
+                        }
                         put(
                             JSONObject().apply {
                                 put("type", "text")

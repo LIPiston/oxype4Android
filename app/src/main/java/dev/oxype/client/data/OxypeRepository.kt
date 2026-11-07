@@ -604,8 +604,13 @@ class OxypeRepository(
      * Sends text and, on success, pulls the server's stored copy so the bubble shows the
      * authoritative id and timestamp. The optimistic echo exists only for the duration
      * of the request and is replaced, so it can never be duplicated.
+     *
+     * [replyTo] is the quoted message's sequence: the server resolves and freezes the
+     * quoted snapshot itself, so nothing else about the target is sent. A target that no
+     * longer exists answers 404, which is reported as this conversation's error and does
+     * not touch the login or the watermark.
      */
-    suspend fun sendText(text: String): Boolean {
+    suspend fun sendText(text: String, replyTo: Long? = null): Boolean {
         val owner = authOwner() ?: throw unauthorized()
         val snapshot = _chat.value ?: return false
         val sync = coordinator ?: return false
@@ -615,7 +620,7 @@ class OxypeRepository(
 
         publish(isSending = true, error = ErrorUpdate.Clear)
         try {
-            val seq = api.sendText(owner.credentials, sessionId, text)
+            val seq = api.sendText(owner.credentials, sessionId, text, replyTo)
             if (seq == null) {
                 // `{ seq: -1 }`: the server declined, most often because this account is
                 // no longer a member. Surface it instead of pretending it was sent.
