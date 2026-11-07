@@ -15,12 +15,12 @@ import org.junit.Test
 class AppNavigationTest {
 
     @Test
-    fun `successful sign in moves from auth to home`() {
+    fun `successful sign in moves from auth to chats`() {
         val state = NavigationState(restoring = false, destination = Destination.Auth)
 
         val next = state.credentialsChanged(present = true)
 
-        assertEquals(Destination.Home, next.destination)
+        assertEquals(Destination.Chats, next.destination)
     }
 
     @Test
@@ -32,24 +32,26 @@ class AppNavigationTest {
 
     @Test
     fun `losing credentials returns any signed in destination to auth`() {
-        val home = NavigationState(restoring = false, destination = Destination.Home)
+        val chats = NavigationState(restoring = false, destination = Destination.Chats)
         val settings = NavigationState(restoring = false, destination = Destination.Settings)
+        val profile = NavigationState(restoring = false, destination = Destination.Profile)
         val chat = NavigationState(
             restoring = false,
             destination = Destination.Chat(9L, "标题", "两位成员")
         )
 
-        assertEquals(Destination.Auth, home.credentialsChanged(present = false).destination)
+        assertEquals(Destination.Auth, chats.credentialsChanged(present = false).destination)
         assertEquals(Destination.Auth, settings.credentialsChanged(present = false).destination)
+        assertEquals(Destination.Auth, profile.credentialsChanged(present = false).destination)
         assertEquals(Destination.Auth, chat.credentialsChanged(present = false).destination)
     }
 
     @Test
     fun `credential changes keep a destination they do not affect`() {
-        val home = NavigationState(restoring = false, destination = Destination.Home)
+        val chats = NavigationState(restoring = false, destination = Destination.Chats)
         assertEquals(
-            Destination.Home,
-            home.credentialsChanged(present = true).destination
+            Destination.Chats,
+            chats.credentialsChanged(present = true).destination
         )
 
         val auth = NavigationState(restoring = false, destination = Destination.Auth)
@@ -62,7 +64,7 @@ class AppNavigationTest {
 
         val signedIn = restoring.restoreFinished(signedIn = true)
         assertFalse(signedIn.restoring)
-        assertEquals(Destination.Home, signedIn.destination)
+        assertEquals(Destination.Chats, signedIn.destination)
 
         val signedOut = restoring.restoreFinished(signedIn = false)
         assertFalse(signedOut.restoring)
@@ -72,7 +74,7 @@ class AppNavigationTest {
     @Test
     fun `a later credential emission after restore still navigates`() {
         val restored = NavigationState().restoreFinished(signedIn = false)
-        assertTrue(restored.credentialsChanged(present = true).destination is Destination.Home)
+        assertTrue(restored.credentialsChanged(present = true).destination is Destination.Chats)
     }
 
     @Test
@@ -218,11 +220,11 @@ class AppNavigationTest {
 
     @Test
     fun `the restore gate is not persisted with the destination`() {
-        val saving = NavigationState(restoring = false, destination = Destination.Home)
+        val saving = NavigationState(restoring = false, destination = Destination.Chats)
 
         // Only the destination is durable: whether a restore still has to run is a
         // property of the current process, not of the saved state.
-        assertEquals(listOf("home"), navigationStateSaver.save(saving))
+        assertEquals(listOf("chats"), navigationStateSaver.save(saving))
     }
 
     @Test
@@ -244,11 +246,80 @@ class AppNavigationTest {
     fun `leaving the conversation drops the retained chat state`() {
         // A later open of the same id has to start at the newest message, so the key must
         // fall back to "no conversation" as soon as the chat is really left.
-        assertEquals(0L, retainedChatSessionId(Destination.Home))
+        assertEquals(0L, retainedChatSessionId(Destination.Chats))
         assertEquals(0L, retainedChatSessionId(Destination.Settings))
+        assertEquals(0L, retainedChatSessionId(Destination.Profile))
         assertEquals(0L, retainedChatSessionId(Destination.Auth))
 
         val otherChat = retainedChatSessionId(Destination.Chat(7L, "另一个会话", ""))
         assertEquals("a different conversation is a different key", 7L, otherChat)
+    }
+
+    // ---- top-level tabs ---------------------------------------------------------
+
+    @Test
+    fun `the three top-level destinations have distinct tab indexes`() {
+        assertEquals(0, tabIndexOf(Destination.Chats))
+        assertEquals(1, tabIndexOf(Destination.Settings))
+        assertEquals(2, tabIndexOf(Destination.Profile))
+    }
+
+    @Test
+    fun `detail destinations have no tab index`() {
+        assertEquals(-1, tabIndexOf(Destination.Chat(9L, "标题", "两位成员")))
+        assertEquals(-1, tabIndexOf(Destination.GroupInfo(9L, "标题", "两位成员")))
+        assertEquals(-1, tabIndexOf(Destination.Auth))
+    }
+
+    @Test
+    fun `only the three tabs are top level`() {
+        assertTrue(Destination.Chats.isTopLevel())
+        assertTrue(Destination.Settings.isTopLevel())
+        assertTrue(Destination.Profile.isTopLevel())
+        assertFalse(Destination.Chat(9L, "标题", "两位成员").isTopLevel())
+        assertFalse(Destination.GroupInfo(9L, "标题", "两位成员").isTopLevel())
+        assertFalse(Destination.Auth.isTopLevel())
+    }
+
+    @Test
+    fun `a detail destination belongs to the chats section`() {
+        // The bottom bar highlights "聊天" while a conversation is open on the way in and
+        // out of it; the section is what the bar follows.
+        assertEquals(Destination.Chats, Destination.Chat(9L, "标题", "两位成员").sectionFor())
+        assertEquals(Destination.Chats, Destination.GroupInfo(9L, "标题", "两位成员").sectionFor())
+        assertEquals(Destination.Chats, Destination.Chats.sectionFor())
+        assertEquals(Destination.Settings, Destination.Settings.sectionFor())
+        assertEquals(Destination.Profile, Destination.Profile.sectionFor())
+        assertEquals(Destination.Auth, Destination.Auth.sectionFor())
+    }
+
+    @Test
+    fun `the top-level destinations round trip through saved state`() {
+        for (destination in listOf(Destination.Chats, Destination.Settings, Destination.Profile)) {
+            val original = NavigationState(restoring = false, destination = destination)
+            assertEquals(
+                destination,
+                navigationStateSaver.restore(
+                    navigationStateSaver.save(original),
+                    restoring = false
+                ).destination
+            )
+        }
+    }
+
+    @Test
+    fun `a saved home destination from the old build reads as chats`() {
+        // The key was renamed with the destination. A process restored from the previous
+        // version must land on the list, not on auth.
+        val restored = navigationStateSaver.restore(listOf("home"), restoring = false)
+
+        assertEquals(Destination.Chats, restored.destination)
+    }
+
+    @Test
+    fun `the profile tab saves as its own key`() {
+        val saving = NavigationState(restoring = false, destination = Destination.Profile)
+
+        assertEquals(listOf("profile"), navigationStateSaver.save(saving))
     }
 }

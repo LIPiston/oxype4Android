@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -117,7 +118,7 @@ fun AppRoot(container: AppContainer) {
         when (val current = navigation.destination) {
             Destination.Auth -> AuthScreen(viewModel = authViewModel)
 
-            Destination.Home -> {
+            Destination.Chats -> {
                 HomeScreen(
                     viewModel = homeViewModel,
                     username = repository.storedUsername(),
@@ -139,10 +140,10 @@ fun AppRoot(container: AppContainer) {
             }
 
             Destination.Settings -> {
-                BackHandler { navigation = navigation.copy(destination = Destination.Home) }
+                BackHandler { navigation = navigation.copy(destination = Destination.Chats) }
                 SettingsScreen(
                     viewModel = settingsViewModel,
-                    onBack = { navigation = navigation.copy(destination = Destination.Home) },
+                    onBack = { navigation = navigation.copy(destination = Destination.Chats) },
                     onSignedOut = {
                         // The credential flow already sends the app to auth; dropping the
                         // cached rows here only hides them for the frame in between.
@@ -151,13 +152,25 @@ fun AppRoot(container: AppContainer) {
                 )
             }
 
+            Destination.Profile -> {
+                // Replaced by the real profile screen once its ViewModel and page exist;
+                // the destination itself is needed so the tab bar and back handling have
+                // a target to move to.
+                BackHandler { navigation = navigation.copy(destination = Destination.Chats) }
+                Surface(modifier = Modifier.fillMaxSize(), color = oxypeColors.appBackground) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("个人资料")
+                    }
+                }
+            }
+
             is Destination.Chat -> {
                 val leaveChat = {
                     chatViewModel.close()
                     // Coming back from a conversation is the moment its preview and
                     // ordering can have changed, so the list is re-read then.
                     homeViewModel.refresh()
-                    navigation = navigation.copy(destination = Destination.Home)
+                    navigation = navigation.copy(destination = Destination.Chats)
                 }
                 BackHandler { leaveChat() }
                 chatScreenState.SaveableStateProvider(retainedChatId) {
