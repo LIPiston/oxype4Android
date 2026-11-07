@@ -36,6 +36,8 @@ data class ProfileUiState(
     val isLoading: Boolean = false,
     val isUploading: Boolean = false,
     val isRemoving: Boolean = false,
+    /** The address the profile was read from; shown on the page and used by "服务器" card. */
+    val serverUrl: String = "",
     /** A one-shot result for the snackbar; the screen clears it after showing it. */
     val message: String? = null,
     /** A recoverable load failure; the page stays usable. */
@@ -55,7 +57,7 @@ data class ProfileUiState(
  */
 class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
 
-    private val _state = MutableStateFlow(ProfileUiState())
+    private val _state = MutableStateFlow(ProfileUiState(serverUrl = repository.baseUrl()))
     val state: StateFlow<ProfileUiState> = _state.asStateFlow()
 
     /** Bumped on every [open] and [close]; answers from an older visit are dropped. */
@@ -73,13 +75,15 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
     fun open() {
         applyCachedProfile()
         refresh()
-    }
-
-    /** Re-reads the profile without hiding what is already on screen. */
+    }    /** Re-reads the profile without hiding what is already on screen. */
     fun refresh() {
         if (_state.value.isLoading) return
         val generation = ++this.generation
-        _state.value = _state.value.copy(isLoading = true, error = null)
+        _state.value = _state.value.copy(
+            isLoading = true,
+            error = null,
+            serverUrl = repository.baseUrl()
+        )
         loading?.cancel()
         loading = viewModelScope.launch {
             try {
@@ -87,7 +91,8 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
                 if (!isCurrent(generation)) return@launch
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    error = null
+                    error = null,
+                    serverUrl = repository.baseUrl()
                 ).withProfile(profile)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -95,10 +100,16 @@ class ProfileViewModel(private val repository: OxypeRepository) : ViewModel() {
                 if (!isCurrent(generation)) return@launch
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    error = if (repository.currentUserId() == null) null else readable(e)
+                    error = if (repository.currentUserId() == null) null else readable(e),
+                    serverUrl = repository.baseUrl()
                 )
             }
         }
+    }
+
+    /** Shows a reason from the picker (an unreadable or unsupported file). */
+    fun report(reason: String) {
+        _state.value = _state.value.copy(message = reason)
     }
 
     /**
