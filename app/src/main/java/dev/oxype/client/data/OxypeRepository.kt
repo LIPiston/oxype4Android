@@ -3,6 +3,7 @@ package dev.oxype.client.data
 import dev.oxype.client.data.oxype.AuthCredentials
 import dev.oxype.client.data.oxype.ChatMessage
 import dev.oxype.client.data.oxype.CreatedSession
+import dev.oxype.client.data.oxype.GroupInfo
 import dev.oxype.client.data.oxype.LastMessageResult
 import dev.oxype.client.data.oxype.OxypeApi
 import dev.oxype.client.data.oxype.OxypeErrorKind
@@ -380,6 +381,96 @@ class OxypeRepository(
         val detail = api.joinSessionByUuid(owner.credentials, uuid)
         if (isCurrentAuth(owner)) refreshSessions()
         return detail
+    }
+
+    /**
+     * Loads the group info page for one conversation.
+     *
+     * Three failures are deliberately different:
+     * - no login → [unauthorized], exactly like every other authenticated call;
+     * - 401 → the token is gone, so the credentials are invalidated and the error is
+     *   rethrown for the caller to surface;
+     * - 403 → the account is authenticated but not allowed to read this session, so it is
+     *   reported as-is and the global login stays. A page about one conversation must
+     *   never sign the user out.
+     *
+     * The member directory is *supplementary*: a 403 or a network failure there leaves the
+     * ids the detail route gave, labelled `用户 N`. The detail route is the one failure
+     * that makes the page as a whole fail, because it is what supplies the name and the
+     * roster in the first place.
+     *
+     * `isOwner`/`isAdmin` are decided here, once, from `ownerId`/`adminIds`; the server's
+     * own booleans are only used when those ids are absent. That keeps the header badge
+     * and the per-member labels consistent.
+     */
+    suspend fun loadGroupInfo(sessionId: Long): GroupInfo {
+        val owner = authOwner() ?: throw unauthorized()
+        val detail = try {
+            api.sessionInfo(owner.credentials, sessionId)
+        } catch (e: OxypeException) {
+            if (e.kind == OxypeErrorKind.UNAUTHORIZED) {
+                invalidateCredentials(owner)
+            }
+            throw e
+        }
+        if (!isCurrentAuth(owner)) throw unauthorized()
+
+        // The directory may be denied or unreachable; the page still has ids to show.
+        val directory = try {
+            api.sessionMembers(owner.credentials, sessionId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: OxypeException) {
+            if (e.kind == OxypeErrorKind.UNAUTHORIZED) {
+                invalidateCredentials(owner)
+                throw e
+            }
+            emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        if (!isCurrentAuth(owner)) throw unauthorized()
+
+        val byId = directory.associateBy { it.userId }
+        val members = detail.members.map { member ->
+            val fromDirectory = byId[member.userId]
+            val hasRealName = member.username != "用户 ${member.userId}"
+            when {
+                // The detail route usually has the name; the directory only fills a
+                // numeric placeholder, never overwrites a real label.
+                hasRealName -> member.copy(
+                    avatarUrl = member.avatarUrl ?: fromDirectory?.avatarUrl
+                )
+
+                fromDirectory != null -> SessionMember(
+                    userId = member.userId,
+                    username = fromDirectory.username,
+                    avatarUrl = member.avatarUrl ?: fromDirectory.avatarUrl
+                )
+
+                else -> member
+            }
+        }
+
+        val currentUserId = owner.credentials.userId
+        val isOwner = if (detail.ownerId > 0L) detail.ownerId == currentUserId else detail.isOwner
+        val isAdmin = if (detail.ownerId > 0L || detail.adminIds.isNotEmpty()) {
+            isOwner || detail.adminIds.contains(currentUserId)
+        } else {
+            detail.isAdmin
+        }
+
+        return GroupInfo(
+            sessionId = detail.sessionId,
+            name = detail.name,
+            description = detail.description,
+            ownerId = detail.ownerId,
+            adminIds = detail.adminIds,
+            members = members,
+            avatarUrl = detail.avatarUrl,
+            isOwner = isOwner,
+            isAdmin = isAdmin
+        )
     }
 
     /**

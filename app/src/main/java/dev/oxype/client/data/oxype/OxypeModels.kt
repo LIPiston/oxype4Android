@@ -113,7 +113,21 @@ data class SessionDetail(
     val ownerId: Long,
     val isOwner: Boolean,
     val isAdmin: Boolean,
-    val members: List<SessionMember>
+    val members: List<SessionMember>,
+    /**
+     * User ids the server listed as admins.
+     *
+     * Historically only the batch route reported this; the detail routes were not read
+     * for it, so it defaults to empty rather than pretending the list is complete.
+     */
+    val adminIds: List<Long> = emptyList(),
+    /**
+     * A session-level avatar, distinct from the members' own.
+     *
+     * Optional like every other avatar on Oxype; `null` means the page draws the
+     * session name's initial instead.
+     */
+    val avatarUrl: String? = null
 ) {
     val memberCount: Int
         get() = members.size
@@ -134,6 +148,28 @@ data class CreatedSession(
     val name: String,
     val inviteUuid: String
 )
+
+/**
+ * Everything the group info page needs, already merged and already decided.
+ *
+ * The screen renders this without a second lookup and without judging who is owner or
+ * admin: [isOwner] and [isAdmin] are computed once from `ownerId`/`adminIds`, so the
+ * header badge and the member row labels can never contradict each other.
+ */
+data class GroupInfo(
+    val sessionId: Long,
+    val name: String,
+    val description: String,
+    val ownerId: Long,
+    val adminIds: List<Long>,
+    val members: List<SessionMember>,
+    val avatarUrl: String?,
+    val isOwner: Boolean,
+    val isAdmin: Boolean
+) {
+    val memberCount: Int
+        get() = members.size
+}
 
 data class LastMessageInfo(
     val hasMessage: Boolean,

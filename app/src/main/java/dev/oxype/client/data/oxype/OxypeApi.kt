@@ -156,9 +156,9 @@ class OxypeApi(private val http: OxypeHttpClient) {
                         description = detail.description,
                         ownerId = detail.ownerId,
                         memberIds = detail.members.map { it.userId },
-                        // The detail route has no admin list; keep whatever the batch row
-                        // reported so the field is not silently lost.
-                        adminIds = row?.adminIds.orEmpty()
+                        // The detail route now reports admins too; prefer its answer and
+                        // keep the batch row's list only when the detail omitted it.
+                        adminIds = detail.adminIds.ifEmpty { row?.adminIds.orEmpty() }
                     )
                 )
 
@@ -523,7 +523,11 @@ class OxypeApi(private val http: OxypeHttpClient) {
                 members
             } else {
                 memberIds.map { SessionMember(it, "用户 $it") }
-            }
+            },
+            adminIds = OxypeJson.longList(
+                OxypeJson.arrayOf(json, "admins", "adminIds", "admin_ids")
+            ),
+            avatarUrl = avatarUrlOf(json)
         )
     }
 
