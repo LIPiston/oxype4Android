@@ -21,17 +21,24 @@ data class QuoteView(
     val isJumpable: Boolean
 )
 
-/** Name on the quote's first line. */
+/**
+ * Name on the quote's first line.
+ *
+ * Quoting my own message says `我` even when the server wrote my display name into the
+ * snapshot: the block answers "who am I replying to", and the bubble's own side already
+ * says the message is mine. Every other sender keeps the snapshot name, because Oxype
+ * freezes it at send time and a later rename must not rewrite history.
+ */
 internal fun quoteAuthorName(
     quote: ReplyQuote,
     participants: Map<Long, SessionMember>,
     currentUserId: Long
 ): String {
+    val senderId = quote.senderId
+    if (senderId != null && senderId > 0L && senderId == currentUserId) return SELF_SENDER_NAME
     val fromSnapshot = quote.senderName?.trim()
     if (!fromSnapshot.isNullOrEmpty()) return fromSnapshot
-    val senderId = quote.senderId
     if (senderId != null && senderId > 0L) {
-        if (senderId == currentUserId) return SELF_SENDER_NAME
         val fromDirectory = participants[senderId]?.username?.trim()
         if (!fromDirectory.isNullOrEmpty()) return fromDirectory
         return "$UNKNOWN_SENDER_NAME $senderId"

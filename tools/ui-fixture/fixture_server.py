@@ -26,12 +26,38 @@ FIXTURE_TOKEN = "fixture-token-user1"
 
 SESSION_ID = 42
 AVATAR_PATH = "/avatars/alex.png"
+SESSION_AVATAR_PATH = "/avatars/session-42.png"
 BASE_AVATAR_URL = "http://127.0.0.1:18080"
 
 # 64x64 RGBA PNG, drawn inline so the fixture has no binary asset dependency.
 AVATAR_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAv0lEQVR42u3bwRHCMBAEwc2ETAmASPlSBAAZgGxsg5Z+KIDpl0q6y/V+e/zzCQAAAAAcdU6X89CpARgN/iZIfjn8CIjMEL4nRGYK3wMis8ZvhZBZw7eCSEP8JwhpiV+LkKb4NQgA2uKXIqQxfgkCgNb4UQQAzfEjCADa498hAAAAoD/+FQIAAAAAAAAAAAAAV2EAAAB4EgPgWRyArzEAvscNSAAwJGVMzqCkUVnD0sblLUxYmbE0ZW0OAAAA3QBPqkb5YGxSXDgAAAAASUVORK5CYII="
 )
+
+
+def _solid_png(size, rgba):
+    """A single-colour PNG, generated so the session avatar is visually distinct."""
+    def chunk(tag, data):
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    raw = b"".join(b"\x00" + bytes(rgba) * size for _ in range(size))
+    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+# The group's own avatar: distinct from any member's, so the info page header is
+# recognisable at a glance.
+SESSION_AVATAR_PNG = _solid_png(64, (0x3E, 0x6B, 0x57, 0xFF))
 
 USERS = {
     1: {"userid": 1, "username": "舟舟"},
@@ -48,7 +74,9 @@ SESSIONS = {
         "description": "UI fixture group",
         "owner": 1,
         "members": [1, 2, 3, 4],
-        "admins": [1],
+        # Two admins so the info page shows both a 群主 and a 管理员 row.
+        "admins": [1, 2],
+        "avatarUrl": BASE_AVATAR_URL + SESSION_AVATAR_PATH,
     }
 }
 
@@ -62,6 +90,8 @@ def _msg(seq, sender, text):
         "sender": sender,
         "timestamp": BASE_TS + seq * 60000,
         "text": text,
+        # Server-written snapshot of the quoted message; `None` for a plain message.
+        "reply": None,
     }
 
 
@@ -85,7 +115,31 @@ INITIAL_MESSAGES = [
         "我这边已经把水和干粮都准备好了，周六早上七点半在地铁站集合，"
         "记得带外套，山顶比市区冷不少。",
     ),
+    _msg(9, 3, "收到，我准时到"),
 ]
+
+# Two seeded replies: one answering somebody else, one answering the logged-in user.
+# They make the quote block and the jump-back reachable without sending anything first.
+_SEEDED_REPLIES = [(7, 4), (9, 8)]
+
+
+def _reply_snapshot(target_id):
+    """The frozen copy the server would have written when the reply was sent."""
+    target = next((m for m in INITIAL_MESSAGES if m["id"] == target_id), None)
+    if target is None:
+        return None
+    return {
+        "messageId": target["id"],
+        "sender": target["sender"],
+        "senderName": USERS.get(target["sender"], {}).get("username", ""),
+        "text": target["text"],
+    }
+
+
+for _reply_seq, _target_id in _SEEDED_REPLIES:
+    for _message in INITIAL_MESSAGES:
+        if _message["id"] == _reply_seq:
+            _message["reply"] = _reply_snapshot(_target_id)
 
 _lock = threading.Lock()
 _messages = [dict(m) for m in INITIAL_MESSAGES]
@@ -128,15 +182,19 @@ def _session_summary(session):
 
 
 def _session_detail(session):
-    return {
+    detail = {
         "sessionId": session["sessionId"],
         "sessionName": session["sessionName"],
         "description": session["description"],
         "owner": session["owner"],
+        "admins": list(session["admins"]),
         "isOwner": session["owner"] == FIXTURE_USER_ID,
         "isAdmin": FIXTURE_USER_ID in session["admins"],
         "users": [_member_payload(uid) for uid in session["members"]],
     }
+    if session.get("avatarUrl"):
+        detail["avatarUrl"] = session["avatarUrl"]
+    return detail
 
 
 class FixtureError(Exception):
@@ -256,6 +314,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == AVATAR_PATH:
             self._send(200, None, content_type="image/png", raw=AVATAR_PNG)
+            return
+
+        if path == SESSION_AVATAR_PATH:
+            self._send(200, None, content_type="image/png", raw=SESSION_AVATAR_PNG)
             return
 
         if path == "/avatars/missing.png":
@@ -420,14 +482,25 @@ class Handler(BaseHTTPRequestHandler):
             caller = self._body_user_id(body)
             self._post_auth(body, caller)
             self._require_session(session_id)
+            pieces = body.get("pieces")
             if not _is_member(caller, session_id):
+                # Soft refusal, exactly like an empty message: the client shows its
+                # existing "message not accepted" text and keeps the draft and the quote.
                 self._ok({"seq": -1})
                 return
-            text = _pieces_text(body.get("pieces"))
+            has_reply, reply_message_id = _reply_message_id(pieces)
+            text = _pieces_text(pieces)
             if not text:
                 raise FixtureError(400, "消息内容为空")
             global _max_seq
             with _lock:
+                # Resolve the quote before appending: an unknown target must not leave
+                # a half-written message behind.
+                reply = (
+                    _reply_snapshot_for(session_id, reply_message_id)
+                    if has_reply
+                    else None
+                )
                 _max_seq += 1
                 seq = _max_seq
                 _messages.append(
@@ -437,6 +510,7 @@ class Handler(BaseHTTPRequestHandler):
                         "sender": caller,
                         "timestamp": _now_millis(),
                         "text": text,
+                        "reply": reply,
                     }
                 )
             print("  appended session=%s seq=%s sender=%s" % (session_id, seq, caller), flush=True)
@@ -504,11 +578,26 @@ def _newest_message(session_id):
 
 
 def _message_payload(message):
+    pieces = []
+    if message.get("reply"):
+        # The server writes the snapshot, and it leads the piece list: the client sends
+        # only `messageId` and never the author or the text.
+        reply = message["reply"]
+        pieces.append(
+            {
+                "type": "reply",
+                "messageId": reply["messageId"],
+                "sender": reply["sender"],
+                "senderName": reply["senderName"],
+                "text": reply["text"],
+            }
+        )
+    pieces.append({"type": "text", "text": message["text"]})
     return {
         "id": message["id"],
         "sender": message["sender"],
         "timestamp": message["timestamp"],
-        "pieces": [{"type": "text", "text": message["text"]}],
+        "pieces": pieces,
     }
 
 
@@ -525,6 +614,38 @@ def _pieces_text(pieces):
         if isinstance(value, str) and value:
             texts.append(value)
     return "".join(texts)
+
+
+def _reply_message_id(pieces):
+    """Returns `(present, message_id)` for a reply piece anywhere in the list."""
+    if not isinstance(pieces, list):
+        return False, None
+    for index, piece in enumerate(pieces):
+        if not isinstance(piece, dict) or piece.get("type") != "reply":
+            continue
+        if index != 0:
+            raise FixtureError(400, "reply 片段必须在首位")
+        try:
+            return True, int(str(piece.get("messageId")).strip())
+        except (TypeError, ValueError):
+            raise FixtureError(400, "reply 片段缺少 messageId")
+    return False, None
+
+
+def _reply_snapshot_for(session_id, message_id):
+    """Freezes the quoted message the way the real server would at send time."""
+    target = next(
+        (m for m in _messages if m["sessionId"] == session_id and m["id"] == message_id),
+        None,
+    )
+    if target is None:
+        raise FixtureError(404, "Message %s to reply to was not found" % message_id)
+    return {
+        "messageId": target["id"],
+        "sender": target["sender"],
+        "senderName": USERS.get(target["sender"], {}).get("username", ""),
+        "text": target["text"],
+    }
 
 
 def main():

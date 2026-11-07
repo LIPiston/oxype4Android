@@ -37,17 +37,19 @@ class QuotePresentationTest {
     }
 
     @Test
-    fun `a quote of my own message says so`() {
-        val quote = ReplyQuote(messageId = 7L, senderId = 1L, text = "我说的话")
+    fun `a quote of my own message says so even when the snapshot carries a name`() {
+        // The block answers "who am I replying to"; my own name adds nothing the bubble
+        // side does not already imply, and §7 requires `我` for this case.
+        val quote = ReplyQuote(messageId = 7L, senderId = 1L, senderName = "我的昵称", text = "我说的话")
 
         assertEquals("我", quoteAuthorName(quote, participants, currentUserId = 1L))
     }
 
     @Test
-    fun `the snapshot name still wins for my own message`() {
-        val quote = ReplyQuote(messageId = 7L, senderId = 1L, senderName = "我的昵称", text = "我说的话")
+    fun `a quote of my own message without a snapshot name still says so`() {
+        val quote = ReplyQuote(messageId = 7L, senderId = 1L, text = "我说的话")
 
-        assertEquals("我的昵称", quoteAuthorName(quote, participants, currentUserId = 1L))
+        assertEquals("我", quoteAuthorName(quote, participants, currentUserId = 1L))
     }
 
     @Test
