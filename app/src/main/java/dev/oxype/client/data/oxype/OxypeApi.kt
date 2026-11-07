@@ -569,10 +569,19 @@ class OxypeApi(private val http: OxypeHttpClient) {
         val piecesJson = OxypeJson.arrayOf(json, "pieces", "content")
             ?: throw malformedMessage("消息 $id 缺少内容片段")
         val pieces = ArrayList<MessagePiece>(piecesJson.length())
+        var reply: ReplyQuote? = null
         for (index in 0 until piecesJson.length()) {
             val piece = piecesJson.opt(index) as? JSONObject
                 ?: throw malformedMessage("消息 $id 第 ${index + 1} 个片段不是对象")
-            val kind = when (OxypeJson.string(piece, "type")?.lowercase()) {
+            val type = OxypeJson.string(piece, "type")?.lowercase()
+            if (type == "reply") {
+                // A quote is message metadata, not body content: it must not be joined
+                // into `plainText`. Only the first one counts; the server allows a single
+                // reply piece and the rest is tolerant reading.
+                if (reply == null) reply = parseReplyPiece(piece)
+                continue
+            }
+            val kind = when (type) {
                 "markdown", "md" -> MessagePieceKind.MARKDOWN
                 "text", null -> MessagePieceKind.TEXT
                 // A piece kind this client does not know is skipped, which keeps a
@@ -590,7 +599,35 @@ class OxypeApi(private val http: OxypeHttpClient) {
             senderId = senderId,
             timestampMillis = OxypeJson.longOr(json, 0L, "timestamp", "time"),
             editedAtMillis = OxypeJson.longOr(json, 0L, "editedAt", "edited_at"),
-            pieces = pieces
+            pieces = pieces,
+            reply = reply
+        )
+    }
+
+    /**
+     * Reads a stored `reply` piece.
+     *
+     * `messageId` is the only hard requirement: without it the quote cannot be jumped to
+     * and is dropped entirely, while the reply's own text stays visible. The snapshot
+     * fields are optional because the server does not document their spelling; a blank
+     * value is treated as absent so the UI can fall back to a locally loaded message
+     * instead of drawing an empty quote block.
+     */
+    private fun parseReplyPiece(piece: JSONObject): ReplyQuote? {
+        val messageId = OxypeJson.long(piece, "messageId", "message_id", "id", "seq")
+            ?.takeIf { it >= 1L }
+            ?: return null
+        val senderId = OxypeJson.long(piece, "sender", "senderId", "sender_id")
+            ?.takeIf { it >= 0L }
+        return ReplyQuote(
+            messageId = messageId,
+            senderId = senderId,
+            senderName = OxypeJson.string(piece, "senderName", "sender_name", "username", "name")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() },
+            text = OxypeJson.string(piece, "text", "content", "value")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
         )
     }
 

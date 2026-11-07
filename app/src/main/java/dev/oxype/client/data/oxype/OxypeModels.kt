@@ -8,13 +8,35 @@ data class AuthCredentials(
 
 enum class MessagePieceKind {
     TEXT,
-    MARKDOWN
+    MARKDOWN,
+
+    /**
+     * A quote snapshot. It is recognized so the parser can pull it out of `pieces`, but
+     * it never becomes a [MessagePiece]: the quote belongs to the message, not to its
+     * body, and joining it into the body would duplicate the quoted text.
+     */
+    REPLY
 }
 
-/** One piece of a message body. Oxype currently defines `text` and `markdown`. */
+/** One piece of a message body. Oxype defines `text`, `markdown` and `reply`. */
 data class MessagePiece(
     val kind: MessagePieceKind,
     val text: String
+)
+
+/**
+ * The quoted message frozen at send time.
+ *
+ * Oxype stores a *snapshot*: the sender, name and text are copied by the server when the
+ * reply is sent, so they survive an edit or deletion of the original. Only [messageId] is
+ * guaranteed — the client has no way to verify the spelling of the rest — so the others
+ * are nullable and the UI falls back to whatever it already has loaded.
+ */
+data class ReplyQuote(
+    val messageId: Long,
+    val senderId: Long? = null,
+    val senderName: String? = null,
+    val text: String? = null
 )
 
 /** A message as stored by the server; `id` is the in-session sequence number. */
@@ -23,7 +45,9 @@ data class ChatMessage(
     val senderId: Long,
     val timestampMillis: Long,
     val editedAtMillis: Long,
-    val pieces: List<MessagePiece>
+    val pieces: List<MessagePiece>,
+    /** Non-null when this message replies to another one; see [ReplyQuote]. */
+    val reply: ReplyQuote? = null
 ) {
     val plainText: String
         get() = pieces.joinToString(separator = "") { it.text }
